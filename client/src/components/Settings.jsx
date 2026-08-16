@@ -5,7 +5,7 @@ const FIELDS = [
   { key: 'camera_url', label: 'Camera Snapshot URL (optional override)', placeholder: 'http://192.168.4.x/webcam/?action=snapshot', hint: 'Leave blank to auto-derive from printer IP' },
   { key: 'moonraker_url', label: 'Moonraker API URL (optional override)', placeholder: 'http://192.168.4.x:7125', hint: 'Leave blank to auto-derive from printer IP' },
   { key: 'ollama_url', label: 'Ollama URL', placeholder: 'http://100.91.228.110:11434', hint: 'Ollama server running a vision-capable model' },
-  { key: 'ollama_model', label: 'Ollama Vision Model', placeholder: 'llava:13b', hint: 'Must be a vision-capable model. Options: llava:13b, qwen2.5vl:7b, llava:7b' },
+  { key: 'ollama_model', label: 'Ollama Vision Model', placeholder: 'qwen2.5vl:7b', hint: 'Must be a vision-capable model. Options: qwen2.5vl:7b, qwen2.5vl:32b, llava:13b' },
 ];
 
 export default function Settings({ config, onSave }) {
@@ -69,8 +69,8 @@ export default function Settings({ config, onSave }) {
           <li><code>http://PRINTER_IP:7125</code> — Moonraker API port</li>
         </ul>
         <p style={{ marginTop: 10, fontWeight: 700, color: 'var(--text)' }}>Ollama Vision Model</p>
-        <p>Pull a vision model on the Mac mini: <code>ollama pull llava:13b</code></p>
-        <p>Lighter option: <code>ollama pull qwen2.5vl:7b</code></p>
+        <p>Default: <code>ollama pull qwen2.5vl:7b</code></p>
+        <p>Higher accuracy: <code>ollama pull qwen2.5vl:32b</code></p>
       </div>
     </div>
   );
