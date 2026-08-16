@@ -31,7 +31,7 @@ db.exec(`
 
 // Seed defaults
 const defaults = {
-  printer_ip: '',
+  printer_ip: '192.168.4.52',
   camera_url: '',
   moonraker_url: '',
   ollama_url: process.env.OLLAMA_URL || 'http://100.91.228.110:11434',
@@ -43,6 +43,12 @@ const defaults = {
 const upsertDefault = db.prepare('INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)');
 for (const [k, v] of Object.entries(defaults)) {
   upsertDefault.run(k, v);
+}
+
+// Backfill printer_ip if still empty
+const currentIp = db.prepare("SELECT value FROM config WHERE key = 'printer_ip'").get();
+if (!currentIp?.value) {
+  db.prepare("UPDATE config SET value = '192.168.4.52' WHERE key = 'printer_ip'").run();
 }
 
 export function getConfig() {
