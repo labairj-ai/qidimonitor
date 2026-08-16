@@ -1,0 +1,19 @@
+[Unit]
+Description=QIDI X-Plus 3 Print Monitor
+After=network.target
+
+[Service]
+Type=simple
+User=optiplex
+WorkingDirectory=/home/optiplex/qidimonitor
+ExecStart=/usr/bin/node --experimental-sqlite server/index.js
+Environment=NODE_ENV=production
+Environment=PORT=4200
+Environment=DB_PATH=/home/optiplex/qidimonitor/qidimonitor.db
+Environment=SNAPSHOTS_DIR=/home/optiplex/qidimonitor/snapshots
+Environment=OLLAMA_URL=http://100.91.228.110:11434
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
