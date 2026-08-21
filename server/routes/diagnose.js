@@ -43,7 +43,7 @@ severity for each issue must be one of: minor, moderate, severe
 If the print looks good, return overall_severity "ok" and an empty issues array.`;
 
 async function runDiagnosis({ imageBuffer, imagePath, printFile, autoTriggered, config }) {
-  const ollamaUrl = config.ollama_url || 'http://100.91.228.110:11434';
+  const ollamaUrl = config.ollama_url || 'http://100.73.128.40:11434';
   const model = config.ollama_model || 'llava:13b';
   const base64 = imageBuffer.toString('base64');
 

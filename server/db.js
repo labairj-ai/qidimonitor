@@ -34,7 +34,7 @@ const defaults = {
   printer_ip: '192.168.4.52',
   camera_url: '',
   moonraker_url: '',
-  ollama_url: process.env.OLLAMA_URL || 'http://100.91.228.110:11434',
+  ollama_url: process.env.OLLAMA_URL || 'http://100.73.128.40:11434',
   ollama_model: 'qwen2.5vl:7b',
   auto_enabled: '0',
   auto_interval_min: '10',
