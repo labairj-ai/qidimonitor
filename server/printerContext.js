@@ -1,4 +1,5 @@
 import fetch from 'node-fetch';
+import { lookupMaterial, checkDeviations } from './materialProfiles.js';
 
 export async function getPrinterContext(config) {
   const base = config.moonraker_url || (config.printer_ip ? `http://${config.printer_ip}:7125` : null);
@@ -47,7 +48,7 @@ export async function getPrinterContext(config) {
     const chamber = status['heater_generic hot'];
     const filSensor = status['filament_switch_sensor fila'];
 
-    return {
+    const ctx = {
       print_state: status.print_stats?.state,
       filename,
       progress_pct: status.display_status?.progress != null ? Math.round(status.display_status.progress * 100) : null,
@@ -66,16 +67,19 @@ export async function getPrinterContext(config) {
       z_mm: status.motion_report?.live_position?.[2] != null ? +status.motion_report.live_position[2].toFixed(3) : null,
       live_velocity: status.motion_report?.live_velocity != null ? +status.motion_report.live_velocity.toFixed(1) : null,
       filament_detected: filSensor?.filament_detected,
-      // Slicer/file metadata
       layer_height: fileMeta?.layer_height,
       first_layer_height: fileMeta?.first_layer_height,
       filament_type: fileMeta?.filament_type?.[0] ?? fileMeta?.filament_name?.[0] ?? null,
       slicer: fileMeta?.slicer ? `${fileMeta.slicer}${fileMeta.slicer_version ? ' ' + fileMeta.slicer_version : ''}` : null,
       slicer_nozzle_temp: fileMeta?.first_layer_extr_temp ?? fileMeta?.nozzle_temperature_range_low ?? null,
       slicer_bed_temp: fileMeta?.first_layer_bed_temp ?? null,
-      // Static printer config
       printer_config: printerCfg,
     };
+
+    ctx.material_profile = lookupMaterial(ctx.filament_type);
+    ctx.deviations = checkDeviations(ctx, ctx.material_profile);
+
+    return ctx;
   } catch {
     return null;
   }
@@ -122,6 +126,22 @@ export function formatContextForPrompt(ctx) {
     if (pc.kinematics) lines.push(`  Kinematics: ${pc.kinematics}`);
     if (pc.input_shaper_x) lines.push(`  Input shaper X: ${pc.input_shaper_x}`);
     if (pc.input_shaper_y) lines.push(`  Input shaper Y: ${pc.input_shaper_y}`);
+  }
+
+  if (ctx.material_profile) {
+    const mp = ctx.material_profile;
+    lines.push('');
+    lines.push(`QIDI recommended ranges for ${ctx.filament_type}:`);
+    lines.push(`  Nozzle: ${mp.nozzle.min}–${mp.nozzle.max}°C`);
+    lines.push(`  Bed: ${mp.bed.min}–${mp.bed.max}°C`);
+    lines.push(`  Cooling: ${mp.cooling} | Max speed: ${mp.speed_max}mm/s`);
+    lines.push(`  Note: ${mp.notes}`);
+  }
+
+  if (ctx.deviations?.length) {
+    lines.push('');
+    lines.push('SETTING DEVIATIONS FROM QIDI RECOMMENDATIONS:');
+    for (const w of ctx.deviations) lines.push(`  ⚠ ${w}`);
   }
 
   if (ctx.filament_detected === false) {

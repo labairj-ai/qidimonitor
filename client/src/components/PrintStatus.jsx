@@ -22,6 +22,7 @@ const STATE_COLORS = {
 
 export default function PrintStatus({ config, onPrinterFound }) {
   const [status, setStatus] = useState(null);
+  const [ctx, setCtx] = useState(null);
   const [error, setError] = useState(null);
   const [discovering, setDiscovering] = useState(false);
   const [foundIp, setFoundIp] = useState(null);
@@ -29,13 +30,18 @@ export default function PrintStatus({ config, onPrinterFound }) {
   const poll = useCallback(async () => {
     if (!config?.printer_ip && !config?.moonraker_url) return;
     try {
-      const r = await fetch('/api/printer/status');
-      if (!r.ok) throw new Error(await r.text());
-      setStatus(await r.json());
+      const [statusRes, ctxRes] = await Promise.all([
+        fetch('/api/printer/status'),
+        fetch('/api/printer/context'),
+      ]);
+      if (!statusRes.ok) throw new Error(await statusRes.text());
+      setStatus(await statusRes.json());
+      if (ctxRes.ok) setCtx(await ctxRes.json());
       setError(null);
       setFoundIp(null);
     } catch (e) {
       setError(e.message);
+      setCtx(null);
     }
   }, [config?.printer_ip, config?.moonraker_url]);
 
@@ -118,7 +124,42 @@ export default function PrintStatus({ config, onPrinterFound }) {
           <div style={{ display: 'flex', gap: 24, marginBottom: 14 }}>
             <TempGauge label="Nozzle" actual={extruder?.temperature} target={extruder?.target} />
             <TempGauge label="Bed" actual={bed?.temperature} target={bed?.target} />
+            {ctx?.chamber_temp != null && (
+              <TempGauge label="Chamber" actual={ctx.chamber_temp} target={ctx.chamber_target} />
+            )}
           </div>
+
+          {/* Material profile + deviations */}
+          {ctx?.filament_type && (
+            <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span style={{ background: 'var(--surface2)', padding: '2px 8px', borderRadius: 4, fontWeight: 600 }}>
+                {ctx.filament_type}
+              </span>
+              {ctx.material_profile && (
+                <span>
+                  Nozzle {ctx.material_profile.nozzle.min}–{ctx.material_profile.nozzle.max}°C &middot; Bed {ctx.material_profile.bed.min}–{ctx.material_profile.bed.max}°C &middot; Fan {ctx.material_profile.cooling}
+                </span>
+              )}
+            </div>
+          )}
+          {ctx?.deviations?.length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              {ctx.deviations.map((w, i) => (
+                <div key={i} style={{ fontSize: 12, color: 'var(--warn)', background: 'rgba(255,180,0,0.08)', borderRadius: 4, padding: '4px 8px', marginBottom: 4 }}>
+                  ⚠ {w}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {ctx?.fan_pct != null && (
+            <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8, display: 'flex', gap: 16 }}>
+              <span>Fan {ctx.fan_pct}%</span>
+              {ctx.speed_factor_pct != null && ctx.speed_factor_pct !== 100 && <span>Speed {ctx.speed_factor_pct}%</span>}
+              {ctx.flow_pct != null && ctx.flow_pct !== 100 && <span>Flow {ctx.flow_pct}%</span>}
+              {ctx.z_mm != null && <span>Z {ctx.z_mm}mm</span>}
+            </div>
+          )}
 
           {progressPct != null && (
             <div style={{ marginBottom: 8 }}>

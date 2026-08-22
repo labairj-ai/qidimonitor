@@ -2,6 +2,7 @@ import { Router } from 'express';
 import fetch from 'node-fetch';
 import { getConfig } from '../db.js';
 import { discoverPrinter, isDiscovering } from '../discovery.js';
+import { getPrinterContext } from '../printerContext.js';
 
 const router = Router();
 
@@ -117,6 +118,14 @@ router.post('/discover', async (req, res) => {
 // GET /api/printer/discover — check if discovery is running
 router.get('/discover', (req, res) => {
   res.json({ discovering: isDiscovering(), printer_ip: getConfig().printer_ip });
+});
+
+// GET /api/printer/context — full printer context with material profile + deviations
+router.get('/context', async (req, res) => {
+  const config = getConfig();
+  const ctx = await getPrinterContext(config);
+  if (!ctx) return res.status(503).json({ error: 'Printer unreachable' });
+  res.json(ctx);
 });
 
 export default router;
