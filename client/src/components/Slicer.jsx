@@ -1,6 +1,39 @@
 import React, { useState, useEffect, useRef } from 'react';
 import STLViewer from './STLViewer.jsx';
 
+const AXIS_COLOR = { X: '#ff6b6b', Y: '#51cf66', Z: '#339af0' };
+
+function RotationAxis({ axis, value, onChange, disabled }) {
+  const color = AXIS_COLOR[axis];
+  const btnStyle = (delta) => ({
+    background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 4,
+    padding: '3px 7px', fontSize: 11, color: 'var(--text)', cursor: disabled ? 'default' : 'pointer',
+    fontFamily: 'monospace', lineHeight: 1,
+  });
+  const steps = [[-90, '−90'], [-15, '−15'], [+15, '+15'], [+90, '+90']];
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+      <span style={{ fontSize: 11, fontWeight: 700, color, minWidth: 12 }}>{axis}</span>
+      {steps.map(([d, label]) => (
+        <button key={d} style={btnStyle(d)} disabled={disabled} onClick={() => onChange(value + d)}>
+          {label}°
+        </button>
+      ))}
+      <input
+        type="number" step="1" value={Math.round(((value % 360) + 360) % 360)}
+        onChange={e => onChange(Number(e.target.value))}
+        disabled={disabled}
+        style={{
+          width: 48, background: 'var(--surface)', border: '1px solid var(--border)',
+          borderRadius: 4, padding: '3px 6px', fontSize: 11, color: 'var(--text)',
+          fontFamily: 'monospace', textAlign: 'right',
+        }}
+      />
+      <span style={{ fontSize: 11, color: 'var(--muted)' }}>°</span>
+    </div>
+  );
+}
+
 function fmtSize(bytes) {
   if (bytes > 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB';
   return (bytes / 1024).toFixed(0) + ' KB';
@@ -57,20 +90,40 @@ const selectStyle = {
   borderRadius: 6, padding: '7px 10px', color: 'var(--text)', fontSize: 13, cursor: 'pointer',
 };
 
-export default function Slicer({ onFileUploaded }) {
+const numStyle = {
+  ...selectStyle, width: '100%', boxSizing: 'border-box',
+};
+
+export default function Slicer({ onFileUploaded, preloadJob }) {
   const [options, setOptions] = useState(null);
 
   // Core settings
   const [material, setMaterial] = useState('PLA');
   const [quality, setQuality] = useState('Standard (0.20mm)');
 
-  // Print options
-  const [supports, setSupports] = useState('none');          // none | normal | tree
+  // Support + brim
+  const [supports, setSupports] = useState('none');
   const [supportBuildPlateOnly, setSupportBuildPlateOnly] = useState(false);
-  const [brim, setBrim] = useState('no_brim');               // no_brim | outer_only | outer_and_inner
+  const [brim, setBrim] = useState('no_brim');
   const [brimWidth, setBrimWidth] = useState(5);
+
+  // Infill
   const [infillDensity, setInfillDensity] = useState(15);
   const [infillPattern, setInfillPattern] = useState('grid');
+
+  // Wall / shell / surface
+  const [wallLoops, setWallLoops] = useState(3);
+  const [topShells, setTopShells] = useState(3);
+  const [bottomShells, setBottomShells] = useState(3);
+
+  // Surface & travel
+  const [ironing, setIroning] = useState('no ironing');
+  const [seamPosition, setSeamPosition] = useState('aligned');
+
+  // Rotation (degrees)
+  const [rotX, setRotX] = useState(0);
+  const [rotY, setRotY] = useState(0);
+  const [rotZ, setRotZ] = useState(0);
 
   // State
   const [file, setFile] = useState(null);
@@ -80,6 +133,7 @@ export default function Slicer({ onFileUploaded }) {
   const [error, setError] = useState(null);
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef();
+  const viewerRef = useRef();
 
   useEffect(() => {
     fetch('/api/slicer/options').then(r => r.json()).then(d => {
@@ -89,12 +143,36 @@ export default function Slicer({ onFileUploaded }) {
     }).catch(() => {});
   }, []);
 
+  // Pre-fill settings when a re-slice job is loaded
+  useEffect(() => {
+    if (!preloadJob) return;
+    const s = preloadJob.settings;
+    if (s.material) setMaterial(s.material);
+    if (s.quality) setQuality(s.quality);
+    if (s.supports) setSupports(s.supports);
+    setSupportBuildPlateOnly(!!s.supportBuildPlateOnly);
+    if (s.brim) setBrim(s.brim);
+    if (s.brimWidth != null) setBrimWidth(s.brimWidth);
+    if (s.infillDensity != null) setInfillDensity(s.infillDensity);
+    if (s.infillPattern) setInfillPattern(s.infillPattern);
+    if (s.wallLoops != null) setWallLoops(s.wallLoops);
+    if (s.topShells != null) setTopShells(s.topShells);
+    if (s.bottomShells != null) setBottomShells(s.bottomShells);
+    if (s.ironing) setIroning(s.ironing);
+    if (s.seamPosition) setSeamPosition(s.seamPosition);
+    setResult(null);
+    setError(null);
+    setFile(null);
+    setRotX(0); setRotY(0); setRotZ(0);
+  }, [preloadJob]);
+
   const handleFile = (f) => {
     if (!f) return;
     if (!/\.stl$/i.test(f.name)) { setError('Only .stl files are supported'); return; }
     setFile(f);
     setResult(null);
     setError(null);
+    setRotX(0); setRotY(0); setRotZ(0);
   };
 
   const onDrop = (e) => {
@@ -103,15 +181,9 @@ export default function Slicer({ onFileUploaded }) {
     handleFile(e.dataTransfer.files[0]);
   };
 
-  const slice = async () => {
-    if (!file) return;
-    setSlicing(true);
-    setUploading(false);
-    setError(null);
-    setResult(null);
-
+  const buildForm = (f) => {
     const form = new FormData();
-    form.append('file', file);
+    if (f) form.append('file', f);
     form.append('material', material);
     form.append('quality', quality);
     form.append('supports', supports);
@@ -120,34 +192,72 @@ export default function Slicer({ onFileUploaded }) {
     form.append('brimWidth', String(brimWidth));
     form.append('infillDensity', String(infillDensity));
     form.append('infillPattern', infillPattern);
+    form.append('wallLoops', String(wallLoops));
+    form.append('topShells', String(topShells));
+    form.append('bottomShells', String(bottomShells));
+    form.append('ironing', ironing);
+    form.append('seamPosition', seamPosition);
+    return form;
+  };
 
-    await new Promise((resolve) => {
-      const xhr = new XMLHttpRequest();
+  const runXhr = (method, url, body) => new Promise((resolve) => {
+    setSlicing(true);
+    setUploading(false);
+    setError(null);
+    setResult(null);
+    const xhr = new XMLHttpRequest();
+    if (method === 'POST' && body instanceof FormData && body.has('file')) {
       xhr.upload.onload = () => setUploading(true);
-      xhr.onload = () => {
-        setSlicing(false);
-        setUploading(false);
-        if (xhr.status >= 200 && xhr.status < 300) {
-          try { setResult(JSON.parse(xhr.responseText)); onFileUploaded?.(); }
-          catch { setError('Invalid server response'); }
-        } else {
-          try { setError(JSON.parse(xhr.responseText).error || xhr.responseText); }
-          catch { setError(xhr.responseText || `Error ${xhr.status}`); }
-        }
-        resolve();
-      };
-      xhr.onerror = () => { setSlicing(false); setUploading(false); setError('Network error'); resolve(); };
-      xhr.open('POST', '/api/slicer/slice');
-      xhr.send(form);
-    });
+    }
+    xhr.onload = () => {
+      setSlicing(false);
+      setUploading(false);
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try { setResult(JSON.parse(xhr.responseText)); onFileUploaded?.(); }
+        catch { setError('Invalid server response'); }
+      } else {
+        try { setError(JSON.parse(xhr.responseText).error || xhr.responseText); }
+        catch { setError(xhr.responseText || `Error ${xhr.status}`); }
+      }
+      resolve();
+    };
+    xhr.onerror = () => { setSlicing(false); setUploading(false); setError('Network error'); resolve(); };
+    xhr.open(method, url);
+    xhr.send(body);
+  });
+
+  const slice = async () => {
+    if (!file && !preloadJob) return;
+    if (preloadJob && !file) {
+      return runXhr('POST', `/api/slicer/reslice/${preloadJob.id}`, buildForm(null));
+    }
+    // If rotation is applied, export the rotated geometry from the viewer and send that
+    let stlToSend = file;
+    if ((rotX !== 0 || rotY !== 0 || rotZ !== 0) && viewerRef.current) {
+      const buffer = viewerRef.current.getTransformedSTL();
+      if (buffer) {
+        const blob = new Blob([buffer], { type: 'application/octet-stream' });
+        stlToSend = new File([blob], file.name, { type: 'application/octet-stream' });
+      }
+    }
+    return runXhr('POST', '/api/slicer/slice', buildForm(stlToSend));
   };
 
   const reset = () => { setFile(null); setResult(null); setError(null); };
   const busy = slicing || uploading;
+  const canSlice = !!file || !!preloadJob;
 
   return (
     <div className="card">
-      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 14 }}>Slice STL</div>
+      <div style={{ fontWeight: 700, fontSize: 14, marginBottom: preloadJob ? 6 : 14 }}>
+        {preloadJob ? `Re-slice: ${preloadJob.stl_name}` : 'Slice STL'}
+      </div>
+
+      {preloadJob && !file && (
+        <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 10 }}>
+          Using stored STL. Drop a new STL below to slice a different file instead.
+        </div>
+      )}
 
       {/* Drop zone */}
       <div
@@ -175,14 +285,41 @@ export default function Slicer({ onFileUploaded }) {
           </div>
         ) : (
           <>
-            <div style={{ fontSize: 13, color: 'var(--muted)' }}>Drop STL file here or click to select</div>
+            <div style={{ fontSize: 13, color: 'var(--muted)' }}>{preloadJob ? 'Drop a different STL to override' : 'Drop STL file here or click to select'}</div>
             <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>.stl</div>
           </>
         )}
       </div>
 
       {/* 3D preview */}
-      {file && !busy && !result && <STLViewer file={file} />}
+      {file && !busy && !result && (
+        <>
+          <STLViewer ref={viewerRef} file={file} rotation={{ x: rotX, y: rotY, z: rotZ }} />
+          <div style={{
+            background: 'var(--surface2)', border: '1px solid var(--border)',
+            borderRadius: 8, padding: '10px 12px', marginBottom: 14,
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                Rotate model
+              </span>
+              {(rotX !== 0 || rotY !== 0 || rotZ !== 0) && (
+                <button
+                  onClick={() => { setRotX(0); setRotY(0); setRotZ(0); }}
+                  style={{ fontSize: 11, color: 'var(--muted)', background: 'none', border: 'none', cursor: 'pointer', padding: '1px 6px' }}
+                >
+                  Reset
+                </button>
+              )}
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+              <RotationAxis axis="X" value={rotX} onChange={setRotX} disabled={busy} />
+              <RotationAxis axis="Y" value={rotY} onChange={setRotY} disabled={busy} />
+              <RotationAxis axis="Z" value={rotZ} onChange={setRotZ} disabled={busy} />
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Settings grid */}
       {options && !result && (
@@ -229,16 +366,13 @@ export default function Slicer({ onFileUploaded }) {
           {brim !== 'no_brim' && (
             <div>
               <Label>Brim width (mm)</Label>
-              <input
-                type="number" min="2" max="20" step="1"
+              <input type="number" min="2" max="20" step="1"
                 value={brimWidth} onChange={e => setBrimWidth(Number(e.target.value))}
-                disabled={busy}
-                style={{ ...selectStyle, width: '100%', boxSizing: 'border-box' }}
-              />
+                disabled={busy} style={numStyle} />
             </div>
           )}
 
-          {/* Support build-plate only (only when supports enabled) */}
+          {/* Support build-plate only */}
           {supports !== 'none' && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 20 }}>
               <input type="checkbox" id="bpo" checked={supportBuildPlateOnly}
@@ -251,12 +385,9 @@ export default function Slicer({ onFileUploaded }) {
           <div style={{ gridColumn: '1 / -1' }}>
             <Label>Infill density — {infillDensity}%</Label>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <input
-                type="range" min="0" max="100" step="5"
+              <input type="range" min="0" max="100" step="5"
                 value={infillDensity} onChange={e => setInfillDensity(Number(e.target.value))}
-                disabled={busy}
-                style={{ flex: 1, accentColor: 'var(--accent)' }}
-              />
+                disabled={busy} style={{ flex: 1, accentColor: 'var(--accent)' }} />
               <span style={{ fontSize: 12, color: 'var(--muted)', minWidth: 36, textAlign: 'right' }}>{infillDensity}%</span>
             </div>
           </div>
@@ -274,6 +405,56 @@ export default function Slicer({ onFileUploaded }) {
               <option value="rectilinear">Rectilinear</option>
             </select>
           </div>
+
+          {/* Divider */}
+          <div style={{ gridColumn: '1 / -1', borderTop: '1px solid var(--border)', margin: '2px 0' }} />
+
+          {/* Wall loops */}
+          <div>
+            <Label>Wall loops</Label>
+            <input type="number" min="1" max="20" step="1"
+              value={wallLoops} onChange={e => setWallLoops(Number(e.target.value))}
+              disabled={busy} style={numStyle} />
+          </div>
+
+          {/* Seam position */}
+          <div>
+            <Label>Seam position</Label>
+            <select value={seamPosition} onChange={e => setSeamPosition(e.target.value)} style={selectStyle} disabled={busy}>
+              <option value="aligned">Aligned</option>
+              <option value="back">Back</option>
+              <option value="random">Random</option>
+              <option value="nearest">Nearest</option>
+            </select>
+          </div>
+
+          {/* Top shells */}
+          <div>
+            <Label>Top shell layers</Label>
+            <input type="number" min="0" max="20" step="1"
+              value={topShells} onChange={e => setTopShells(Number(e.target.value))}
+              disabled={busy} style={numStyle} />
+          </div>
+
+          {/* Bottom shells */}
+          <div>
+            <Label>Bottom shell layers</Label>
+            <input type="number" min="0" max="20" step="1"
+              value={bottomShells} onChange={e => setBottomShells(Number(e.target.value))}
+              disabled={busy} style={numStyle} />
+          </div>
+
+          {/* Ironing */}
+          <div style={{ gridColumn: '1 / -1' }}>
+            <Label>Ironing (top surface)</Label>
+            <select value={ironing} onChange={e => setIroning(e.target.value)} style={selectStyle} disabled={busy}>
+              <option value="no ironing">None</option>
+              <option value="top">Top surface only</option>
+              <option value="topmost">Topmost surface only</option>
+              <option value="solid">All solid layers</option>
+            </select>
+          </div>
+
         </div>
       )}
 
@@ -281,16 +462,16 @@ export default function Slicer({ onFileUploaded }) {
       {!result && (
         <button
           onClick={slice}
-          disabled={!file || busy}
+          disabled={!canSlice || busy}
           style={{
             width: '100%', padding: '10px 0', fontWeight: 700, fontSize: 13,
-            background: file && !busy ? 'var(--accent)' : 'var(--surface2)',
-            color: file && !busy ? '#fff' : 'var(--muted)',
-            border: 'none', borderRadius: 6, cursor: file && !busy ? 'pointer' : 'default',
+            background: canSlice && !busy ? 'var(--accent)' : 'var(--surface2)',
+            color: canSlice && !busy ? '#fff' : 'var(--muted)',
+            border: 'none', borderRadius: 6, cursor: canSlice && !busy ? 'pointer' : 'default',
             transition: 'background 0.15s',
           }}
         >
-          {busy ? 'Slicing…' : 'Slice & Upload to Printer'}
+          {busy ? 'Slicing…' : preloadJob && !file ? 'Re-slice & Upload to Printer' : 'Slice & Upload to Printer'}
         </button>
       )}
 
@@ -313,6 +494,8 @@ export default function Slicer({ onFileUploaded }) {
             <div><span style={{ color: 'var(--muted)' }}>Size: </span>{fmtSize(result.size)}</div>
             <div><span style={{ color: 'var(--muted)' }}>Material: </span>{result.material} · {result.quality}</div>
             <div><span style={{ color: 'var(--muted)' }}>Infill: </span>{result.infillDensity}% {result.infillPattern}</div>
+            <div><span style={{ color: 'var(--muted)' }}>Walls: </span>{result.wallLoops} loops · Top {result.topShells} · Bottom {result.bottomShells}</div>
+            <div><span style={{ color: 'var(--muted)' }}>Seam: </span>{result.seamPosition}{result.ironing !== 'no ironing' ? ` · Ironing: ${result.ironing}` : ''}</div>
             {result.supports !== 'none' && <div><span style={{ color: 'var(--muted)' }}>Supports: </span>{result.supports}{result.supportBuildPlateOnly ? ' (build plate only)' : ''}</div>}
             {result.brim !== 'no_brim' && <div><span style={{ color: 'var(--muted)' }}>Brim: </span>{result.brim} {result.brimWidth}mm</div>}
           </div>

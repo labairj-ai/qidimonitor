@@ -133,4 +133,25 @@ router.get('/context', async (req, res) => {
   res.json(ctx);
 });
 
+// POST /api/printer/gcode — run a raw gcode command (M220, M221, etc.)
+router.post('/gcode', async (req, res) => {
+  const { script } = req.body;
+  if (!script) return res.status(400).json({ error: 'script required' });
+  const config = getConfig();
+  const base = moonrakerUrl(config);
+  if (!base) return res.status(400).json({ error: 'Printer not configured' });
+  try {
+    const r = await fetch(`${base}/printer/gcode/script`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ script }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 export default router;

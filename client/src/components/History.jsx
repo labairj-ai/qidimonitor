@@ -1,5 +1,19 @@
 import React, { useState, useEffect } from 'react';
 
+const ISSUE_LABELS = {
+  stringing: 'Stringing',
+  layer_delamination: 'Layer Delamination',
+  warping: 'Warping',
+  under_extrusion: 'Under-Extrusion',
+  over_extrusion: 'Over-Extrusion',
+  elephant_foot: 'Elephant Foot',
+  ghosting: 'Ghosting/Ringing',
+  spaghetti: 'Spaghetti Failure',
+  blob_zit: 'Blob/Zit',
+  bed_adhesion: 'Bed Adhesion',
+  ok: 'Healthy Print',
+};
+
 const SEV_COLORS = { ok: 'var(--ok)', warning: 'var(--warn)', critical: 'var(--crit)' };
 
 function ContextRow({ label, value }) {
@@ -84,17 +98,30 @@ export default function History() {
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <div style={{ flex: 1 }}>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <span style={{ fontWeight: 600, fontSize: 13, color: SEV_COLORS[r.overall_severity] }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={{ fontWeight: 700, fontSize: 13, color: SEV_COLORS[r.overall_severity] }}>
                   {r.overall_severity === 'ok' ? 'OK' : r.overall_severity === 'warning' ? 'Warning' : 'Critical'}
                 </span>
                 {r.auto_triggered && <span style={{ fontSize: 11, color: 'var(--muted)', background: 'var(--surface2)', padding: '1px 6px', borderRadius: 4 }}>auto</span>}
-                {r.print_file && <span style={{ fontSize: 12, color: 'var(--muted)' }}>{r.print_file}</span>}
+                {r.issues?.length > 0 && (
+                  <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                    — {r.issues.map(iss => {
+                      const sevColor = iss.severity === 'severe' ? 'var(--crit)' : iss.severity === 'moderate' ? 'var(--warn)' : 'var(--muted)';
+                      return (
+                        <span key={iss.category} style={{ marginRight: 8 }}>
+                          <span style={{ color: sevColor, fontWeight: 600 }}>{ISSUE_LABELS[iss.category] || iss.category}</span>
+                          <span style={{ color: 'var(--muted)', fontSize: 11 }}> ({iss.severity})</span>
+                        </span>
+                      );
+                    })}
+                  </span>
+                )}
+                {r.print_file && <span style={{ fontSize: 11, color: 'var(--muted)' }}>{r.print_file}</span>}
               </div>
               <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
                 {new Date(r.timestamp).toLocaleString()}
                 {r.printer_context?.z_mm != null && <span style={{ marginLeft: 8 }}>Z {r.printer_context.z_mm}mm</span>}
-                {r.printer_context?.nozzle_temp != null && <span style={{ marginLeft: 8 }}>🌡 {r.printer_context.nozzle_temp}°</span>}
+                {r.printer_context?.nozzle_temp != null && <span style={{ marginLeft: 8 }}>{r.printer_context.nozzle_temp}°C</span>}
               </div>
             </div>
             <span style={{ color: 'var(--muted)', fontSize: 14 }}>{expanded === r.id ? '▲' : '▼'}</span>
@@ -103,15 +130,27 @@ export default function History() {
           {expanded === r.id && (
             <div style={{ marginTop: 12, borderTop: '1px solid var(--border)', paddingTop: 12 }}>
               {r.issues?.length > 0 ? (
-                r.issues.map((issue, i) => (
-                  <div key={i} style={{ marginBottom: 8 }}>
-                    <span style={{ fontWeight: 600, fontSize: 13 }}>{issue.category}</span>
-                    <span style={{ fontSize: 12, color: 'var(--muted)', marginLeft: 8 }}>{issue.severity}</span>
-                    <p style={{ fontSize: 13, color: 'var(--muted)', marginTop: 2 }}>{issue.suggestion}</p>
-                  </div>
-                ))
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
+                  {r.issues.map((issue, i) => {
+                    const sevColor = issue.severity === 'severe' ? 'var(--crit)' : issue.severity === 'moderate' ? 'var(--warn)' : 'var(--ok)';
+                    return (
+                      <div key={i} style={{ background: 'var(--surface)', borderRadius: 7, padding: '9px 12px', borderLeft: `3px solid ${sevColor}` }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: issue.description ? 5 : 3 }}>
+                          <span style={{ fontWeight: 700, fontSize: 13 }}>{ISSUE_LABELS[issue.category] || issue.category}</span>
+                          <span style={{ fontSize: 11, color: sevColor, fontWeight: 600, textTransform: 'uppercase' }}>{issue.severity}</span>
+                        </div>
+                        {issue.description && (
+                          <p style={{ fontSize: 13, color: 'var(--text)', marginBottom: 5, lineHeight: 1.45 }}>{issue.description}</p>
+                        )}
+                        <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 0, lineHeight: 1.45, borderTop: issue.description ? '1px solid var(--border)' : 'none', paddingTop: issue.description ? 5 : 0 }}>
+                          <span style={{ fontWeight: 600, color: 'var(--accent)' }}>Fix: </span>{issue.suggestion}
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
               ) : (
-                <p style={{ fontSize: 13, color: 'var(--ok)' }}>No issues detected</p>
+                <p style={{ fontSize: 13, color: 'var(--ok)', marginBottom: 12 }}>No issues detected</p>
               )}
               <PrinterContextPanel ctx={r.printer_context} />
             </div>

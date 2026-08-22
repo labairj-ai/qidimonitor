@@ -27,8 +27,9 @@ function MetaBadge({ children, color }) {
   );
 }
 
-export default function FileManager({ refreshKey }) {
+export default function FileManager({ refreshKey, onReslice }) {
   const [files, setFiles] = useState([]);
+  const [slicerJobs, setSlicerJobs] = useState({}); // gcode_name → job
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(null); // { name, pct, loaded, total, phase }
@@ -43,9 +44,18 @@ export default function FileManager({ refreshKey }) {
 
   const loadFiles = useCallback(async () => {
     try {
-      const r = await fetch('/api/files');
-      if (!r.ok) throw new Error(await r.text());
-      setFiles(await r.json());
+      const [filesRes, jobsRes] = await Promise.all([
+        fetch('/api/files'),
+        fetch('/api/slicer/jobs'),
+      ]);
+      if (!filesRes.ok) throw new Error(await filesRes.text());
+      setFiles(await filesRes.json());
+      if (jobsRes.ok) {
+        const jobs = await jobsRes.json();
+        const byName = {};
+        for (const j of jobs) byName[j.gcode_name] = j;
+        setSlicerJobs(byName);
+      }
       setError(null);
     } catch (e) {
       setError(e.message);
@@ -247,6 +257,7 @@ export default function FileManager({ refreshKey }) {
             const isStarting = starting === f.path;
             const isDeleting = deleting === f.path;
             const isNew = justUploaded && f.path === justUploaded;
+            const slicerJob = slicerJobs[f.path];
             return (
               <div key={f.path} className="card" style={{ padding: '12px 14px', outline: isNew ? '2px solid var(--ok)' : 'none', outlineOffset: -1 }}>
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
@@ -254,6 +265,7 @@ export default function FileManager({ refreshKey }) {
                     <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4, wordBreak: 'break-word', display: 'flex', alignItems: 'center', gap: 6 }}>
                       {name}
                       {isNew && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--ok)', background: 'rgba(80,200,120,0.12)', padding: '1px 6px', borderRadius: 3 }}>NEW</span>}
+                      {slicerJob && <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--accent)', background: 'rgba(74,158,255,0.1)', padding: '1px 6px', borderRadius: 3 }}>STL stored</span>}
                     </div>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: meta ? 6 : 0 }}>
                       <MetaBadge>{fmtSize(f.size)}</MetaBadge>
@@ -264,6 +276,11 @@ export default function FileManager({ refreshKey }) {
                       {meta?.object_height && <MetaBadge>↑ {meta.object_height}mm tall</MetaBadge>}
                       {meta?.filament_total && <MetaBadge>🧵 {(meta.filament_total / 1000).toFixed(1)}m</MetaBadge>}
                     </div>
+                    {slicerJob && (
+                      <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 2 }}>
+                        {slicerJob.stl_name} · {slicerJob.settings.material} · {slicerJob.settings.quality}
+                      </div>
+                    )}
                     {meta && (
                       <div style={{ fontSize: 11, color: 'var(--muted)' }}>
                         {meta.first_layer_extr_temp && `Nozzle ${meta.first_layer_extr_temp}°C`}
@@ -272,29 +289,44 @@ export default function FileManager({ refreshKey }) {
                       </div>
                     )}
                   </div>
-                  <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                    <button
-                      onClick={() => startPrint(f.path)}
-                      disabled={isStarting || isDeleting}
-                      style={{
-                        background: 'var(--ok)', color: '#fff', border: 'none',
-                        borderRadius: 5, padding: '5px 12px', fontSize: 12, fontWeight: 600,
-                        cursor: isStarting ? 'default' : 'pointer', opacity: isStarting ? 0.7 : 1,
-                      }}
-                    >
-                      {isStarting ? '…' : '▶ Print'}
-                    </button>
-                    <button
-                      onClick={() => deleteFile(f.path)}
-                      disabled={isStarting || isDeleting}
-                      style={{
-                        background: 'none', color: 'var(--crit)', border: '1px solid var(--crit)',
-                        borderRadius: 5, padding: '5px 10px', fontSize: 12, fontWeight: 600,
-                        cursor: isDeleting ? 'default' : 'pointer', opacity: isDeleting ? 0.5 : 1,
-                      }}
-                    >
-                      {isDeleting ? '…' : '✕'}
-                    </button>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button
+                        onClick={() => startPrint(f.path)}
+                        disabled={isStarting || isDeleting}
+                        style={{
+                          background: 'var(--ok)', color: '#fff', border: 'none',
+                          borderRadius: 5, padding: '5px 12px', fontSize: 12, fontWeight: 600,
+                          cursor: isStarting ? 'default' : 'pointer', opacity: isStarting ? 0.7 : 1,
+                        }}
+                      >
+                        {isStarting ? '…' : '▶ Print'}
+                      </button>
+                      <button
+                        onClick={() => deleteFile(f.path)}
+                        disabled={isStarting || isDeleting}
+                        style={{
+                          background: 'none', color: 'var(--crit)', border: '1px solid var(--crit)',
+                          borderRadius: 5, padding: '5px 10px', fontSize: 12, fontWeight: 600,
+                          cursor: isDeleting ? 'default' : 'pointer', opacity: isDeleting ? 0.5 : 1,
+                        }}
+                      >
+                        {isDeleting ? '…' : '✕'}
+                      </button>
+                    </div>
+                    {slicerJob && onReslice && (
+                      <button
+                        onClick={() => onReslice(slicerJob)}
+                        disabled={isStarting || isDeleting}
+                        style={{
+                          background: 'none', color: 'var(--accent)', border: '1px solid var(--accent)',
+                          borderRadius: 5, padding: '4px 10px', fontSize: 11, fontWeight: 600,
+                          cursor: 'pointer', whiteSpace: 'nowrap',
+                        }}
+                      >
+                        ↻ Re-slice
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>

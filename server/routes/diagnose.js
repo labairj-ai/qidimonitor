@@ -42,13 +42,20 @@ Respond ONLY with valid JSON in this exact format:
 {
   "overall_severity": "ok",
   "issues": [
-    {"category": "stringing", "severity": "minor", "suggestion": "Lower retraction distance or increase travel speed"}
+    {
+      "category": "stringing",
+      "severity": "minor",
+      "description": "Fine hair-like strands visible between the towers in the upper half of the model",
+      "suggestion": "Lower retraction distance or increase travel speed"
+    }
   ],
-  "summary": "One sentence overall assessment of the print quality."
+  "summary": "Minor stringing visible between towers but overall print quality is good."
 }
 
 overall_severity must be one of: ok, warning, critical
 severity for each issue must be one of: minor, moderate, severe
+description must be a specific observation of what you see in the image that led to this diagnosis — be concrete about location and appearance, not generic.
+suggestion must be an actionable fix.
 If the print looks good, return overall_severity "ok" and an empty issues array.`;
 
 async function runDiagnosis({ imageBuffer, imagePath, printFile, autoTriggered, config }) {
@@ -66,14 +73,13 @@ async function runDiagnosis({ imageBuffer, imagePath, printFile, autoTriggered, 
 
   const body = {
     model,
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: userText, images: [base64] },
-    ],
+    system: SYSTEM_PROMPT,
+    prompt: userText,
+    images: [base64],
     stream: false,
   };
 
-  const r = await fetch(`${ollamaUrl}/api/chat`, {
+  const r = await fetch(`${ollamaUrl}/api/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -82,7 +88,12 @@ async function runDiagnosis({ imageBuffer, imagePath, printFile, autoTriggered, 
 
   if (!r.ok) throw new Error(`Ollama ${r.status}: ${await r.text()}`);
   const data = await r.json();
-  const raw = data.message?.content || data.response || '';
+  const raw = data.response || data.message?.content || '';
+
+  if (!raw.trim()) {
+    const errDetail = data.error ? JSON.stringify(data.error).slice(0, 200) : 'empty response';
+    throw new Error(`Model returned no content (${errDetail}). The vision model may be overloaded or the image failed to process — try re-pulling: ollama pull ${model}`);
+  }
 
   let parsed;
   try {
@@ -138,6 +149,77 @@ router.post('/diagnose', upload.single('image'), async (req, res) => {
   try {
     const result = await runDiagnosis({ imageBuffer, imagePath, printFile: req.body?.print_file, autoTriggered: false, config });
     res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/diagnose/chat — follow-up conversation grounded in a diagnosis result
+router.post('/diagnose/chat', async (req, res) => {
+  const { messages, context } = req.body;
+  if (!messages?.length) return res.status(400).json({ error: 'messages required' });
+
+  const config = getConfig();
+  const ollamaUrl = config.ollama_url || 'http://100.73.128.40:11434';
+  const model = config.ollama_model || 'llava:13b';
+
+  const systemLines = [
+    'You are a 3D printing expert helping a user understand a print quality issue on their QIDI X-Plus 3 (CoreXY, 0.4mm nozzle).',
+    'A vision AI just ran a diagnosis on their print. Answer questions about it conversationally and practically.',
+    '',
+  ];
+
+  if (context) {
+    systemLines.push(`DIAGNOSIS: ${(context.overall_severity || 'unknown').toUpperCase()}`);
+    if (context.summary) systemLines.push(`Summary: ${context.summary}`);
+
+    if (context.issues?.length > 0) {
+      systemLines.push('', 'DETECTED ISSUES:');
+      for (const iss of context.issues) {
+        const desc = iss.description ? `: ${iss.description}` : '';
+        systemLines.push(`- ${iss.category} (${iss.severity})${desc} → Fix: ${iss.suggestion}`);
+      }
+    } else {
+      systemLines.push('No specific issues were identified by the vision model.');
+    }
+
+    const pc = context.printer_context;
+    if (pc || context.print_file) {
+      systemLines.push('', 'PRINTER STATE AT TIME OF DIAGNOSIS:');
+      if (context.print_file) systemLines.push(`  File: ${context.print_file}`);
+      if (pc?.filament_type) systemLines.push(`  Filament: ${pc.filament_type}`);
+      if (pc?.nozzle_temp != null) systemLines.push(`  Nozzle: ${pc.nozzle_temp}°C (target ${pc.nozzle_target}°C)`);
+      if (pc?.bed_temp != null) systemLines.push(`  Bed: ${pc.bed_temp}°C (target ${pc.bed_target}°C)`);
+      if (pc?.chamber_temp != null) systemLines.push(`  Chamber: ${pc.chamber_temp}°C`);
+      if (pc?.fan_pct != null) systemLines.push(`  Part cooling fan: ${pc.fan_pct}%`);
+      if (pc?.layer_height) systemLines.push(`  Layer height: ${pc.layer_height}mm`);
+      if (pc?.z_mm != null) systemLines.push(`  Z height at snapshot: ${pc.z_mm}mm`);
+      if (pc?.progress_pct != null) systemLines.push(`  Print progress: ${pc.progress_pct}%`);
+      if (pc?.pressure_advance) systemLines.push(`  Pressure advance: ${pc.pressure_advance}`);
+      if (pc?.slicer) systemLines.push(`  Slicer: ${pc.slicer}`);
+      if (pc?.speed_factor_pct && pc.speed_factor_pct !== 100) systemLines.push(`  Speed override: ${pc.speed_factor_pct}%`);
+      if (pc?.flow_pct && pc.flow_pct !== 100) systemLines.push(`  Flow override: ${pc.flow_pct}%`);
+    }
+
+    systemLines.push('', 'Help the user understand whether the issue was caused by settings, the model/file, material, mechanical factors, or something else. Be specific and practical.');
+  }
+
+  try {
+    const r = await fetch(`${ollamaUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'system', content: systemLines.join('\n') }, ...messages],
+        stream: false,
+      }),
+      signal: AbortSignal.timeout(60000),
+    });
+    if (!r.ok) throw new Error(`Ollama ${r.status}: ${await r.text()}`);
+    const data = await r.json();
+    const reply = data.message?.content || data.response || '';
+    if (!reply.trim()) throw new Error('Model returned empty response');
+    res.json({ reply });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

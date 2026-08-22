@@ -15,6 +15,7 @@ export default function App() {
   const [config, setConfig] = useState(null);
   const [lastResult, setLastResult] = useState(null);
   const [fileRefreshKey, setFileRefreshKey] = useState(0);
+  const [resliceJob, setResliceJob] = useState(null);
 
   const loadConfig = useCallback(async () => {
     const r = await fetch('/api/config');
@@ -75,9 +76,12 @@ export default function App() {
         {tab === 'Files' && (
           <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <Slicer onFileUploaded={() => setFileRefreshKey(k => k + 1)} />
+              <Slicer
+                onFileUploaded={() => { setFileRefreshKey(k => k + 1); setResliceJob(null); }}
+                preloadJob={resliceJob}
+              />
             </div>
-            <FileManager refreshKey={fileRefreshKey} />
+            <FileManager refreshKey={fileRefreshKey} onReslice={setResliceJob} />
           </div>
         )}
         {tab === 'History' && <History />}

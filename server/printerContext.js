@@ -53,6 +53,7 @@ export async function getPrinterContext(config) {
       filename,
       progress_pct: status.display_status?.progress != null ? Math.round(status.display_status.progress * 100) : null,
       print_duration_min: status.print_stats?.print_duration ? Math.round(status.print_stats.print_duration / 60) : null,
+      print_duration_sec: status.print_stats?.print_duration ?? null,
       filament_used_mm: status.print_stats?.filament_used ? Math.round(status.print_stats.filament_used) : null,
       nozzle_temp: status.extruder?.temperature != null ? +status.extruder.temperature.toFixed(1) : null,
       nozzle_target: status.extruder?.target,
@@ -73,8 +74,22 @@ export async function getPrinterContext(config) {
       slicer: fileMeta?.slicer ? `${fileMeta.slicer}${fileMeta.slicer_version ? ' ' + fileMeta.slicer_version : ''}` : null,
       slicer_nozzle_temp: fileMeta?.first_layer_extr_temp ?? fileMeta?.nozzle_temperature_range_low ?? null,
       slicer_bed_temp: fileMeta?.first_layer_bed_temp ?? null,
+      estimated_total_sec: fileMeta?.estimated_time ?? null,
       printer_config: printerCfg,
     };
+
+    // Time remaining: prefer slicer estimate adjusted by progress; fall back to elapsed-based projection
+    const progress = status.display_status?.progress;
+    const elapsed = ctx.print_duration_sec;
+    if (progress != null && progress > 0.01 && elapsed != null) {
+      if (ctx.estimated_total_sec) {
+        ctx.time_remaining_sec = Math.max(0, Math.round(ctx.estimated_total_sec * (1 - progress)));
+      } else {
+        ctx.time_remaining_sec = Math.max(0, Math.round((elapsed / progress) - elapsed));
+      }
+    } else {
+      ctx.time_remaining_sec = null;
+    }
 
     ctx.material_profile = lookupMaterial(ctx.filament_type);
     ctx.deviations = checkDeviations(ctx, ctx.material_profile);

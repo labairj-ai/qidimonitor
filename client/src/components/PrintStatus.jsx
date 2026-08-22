@@ -1,5 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
 
+function fmtTime(sec) {
+  if (sec == null || sec < 0) return null;
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
 function TempGauge({ label, actual, target }) {
   return (
     <div style={{ textAlign: 'center' }}>
@@ -71,6 +79,29 @@ export default function PrintStatus({ config, onPrinterFound }) {
   };
 
   const [controlling, setControlling] = useState(null);
+  const [speedPct, setSpeedPct] = useState(100);
+  const [flowPct, setFlowPct] = useState(100);
+  const [pendingSpeed, setPendingSpeed] = useState(false);
+  const [pendingFlow, setPendingFlow] = useState(false);
+
+  // Sync sliders when fresh context arrives
+  useEffect(() => {
+    if (ctx?.speed_factor_pct != null) setSpeedPct(ctx.speed_factor_pct);
+    if (ctx?.flow_pct != null) setFlowPct(ctx.flow_pct);
+  }, [ctx?.speed_factor_pct, ctx?.flow_pct]);
+
+  const sendGcode = async (script, setPending) => {
+    setPending(true);
+    try {
+      await fetch('/api/printer/gcode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ script }),
+      });
+      setTimeout(poll, 800);
+    } catch {}
+    finally { setPending(false); }
+  };
 
   const printAction = async (action) => {
     setControlling(action);
@@ -175,11 +206,78 @@ export default function PrintStatus({ config, onPrinterFound }) {
           {progressPct != null && (
             <div style={{ marginBottom: 8 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--muted)', marginBottom: 4 }}>
-                <span>{stats?.filename || 'Unknown file'}</span>
-                <span>{progressPct}%</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '60%' }}>
+                  {stats?.filename || 'Unknown file'}
+                </span>
+                <div style={{ display: 'flex', gap: 10, flexShrink: 0 }}>
+                  {ctx?.time_remaining_sec != null && (
+                    <span style={{ color: 'var(--accent)', fontWeight: 600 }}>
+                      {fmtTime(ctx.time_remaining_sec)} left
+                    </span>
+                  )}
+                  <span>{progressPct}%</span>
+                </div>
               </div>
               <div style={{ background: 'var(--surface2)', borderRadius: 4, height: 6 }}>
                 <div style={{ background: 'var(--accent)', width: `${progressPct}%`, height: '100%', borderRadius: 4, transition: 'width 0.5s' }} />
+              </div>
+              {ctx?.print_duration_min != null && (
+                <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 3 }}>
+                  Elapsed {fmtTime(ctx.print_duration_min * 60)}
+                  {ctx?.filament_used_mm != null && ` · ${(ctx.filament_used_mm / 1000).toFixed(1)}m filament`}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Speed + flow override controls */}
+          {state === 'printing' && (
+            <div style={{ marginBottom: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {/* Speed */}
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}>
+                  <span style={{ color: 'var(--muted)' }}>Print speed</span>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <span style={{ fontWeight: 700, color: speedPct !== 100 ? 'var(--warn)' : 'var(--text)', fontFamily: 'monospace' }}>{speedPct}%</span>
+                    <button
+                      onClick={() => { setSpeedPct(100); sendGcode('M220 S100', setPendingSpeed); }}
+                      disabled={speedPct === 100 || pendingSpeed}
+                      style={{ fontSize: 10, color: 'var(--muted)', background: 'none', border: '1px solid var(--border)', borderRadius: 3, padding: '1px 6px', cursor: speedPct !== 100 ? 'pointer' : 'default' }}
+                    >
+                      Reset
+                    </button>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <input type="range" min="25" max="200" step="5" value={speedPct}
+                    onChange={e => setSpeedPct(Number(e.target.value))}
+                    onMouseUp={() => sendGcode(`M220 S${speedPct}`, setPendingSpeed)}
+                    onTouchEnd={() => sendGcode(`M220 S${speedPct}`, setPendingSpeed)}
+                    style={{ flex: 1, accentColor: speedPct > 100 ? 'var(--warn)' : 'var(--accent)' }}
+                  />
+                </div>
+              </div>
+              {/* Flow */}
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}>
+                  <span style={{ color: 'var(--muted)' }}>Flow rate</span>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <span style={{ fontWeight: 700, color: flowPct !== 100 ? 'var(--warn)' : 'var(--text)', fontFamily: 'monospace' }}>{flowPct}%</span>
+                    <button
+                      onClick={() => { setFlowPct(100); sendGcode('M221 S100', setPendingFlow); }}
+                      disabled={flowPct === 100 || pendingFlow}
+                      style={{ fontSize: 10, color: 'var(--muted)', background: 'none', border: '1px solid var(--border)', borderRadius: 3, padding: '1px 6px', cursor: flowPct !== 100 ? 'pointer' : 'default' }}
+                    >
+                      Reset
+                    </button>
+                  </div>
+                </div>
+                <input type="range" min="50" max="150" step="5" value={flowPct}
+                  onChange={e => setFlowPct(Number(e.target.value))}
+                  onMouseUp={() => sendGcode(`M221 S${flowPct}`, setPendingFlow)}
+                  onTouchEnd={() => sendGcode(`M221 S${flowPct}`, setPendingFlow)}
+                  style={{ width: '100%', accentColor: flowPct !== 100 ? 'var(--warn)' : 'var(--accent)' }}
+                />
               </div>
             </div>
           )}

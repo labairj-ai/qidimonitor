@@ -33,6 +33,39 @@ db.exec(`
 // Add printer_context column to existing DBs that predate this schema
 try { db.exec(`ALTER TABLE diagnoses ADD COLUMN printer_context TEXT`); } catch { /* already exists */ }
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS slicer_jobs (
+    id TEXT PRIMARY KEY,
+    stl_name TEXT NOT NULL,
+    stl_path TEXT NOT NULL,
+    gcode_name TEXT NOT NULL,
+    settings TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+`);
+
+export function insertSlicerJob(job) {
+  db.prepare(`
+    INSERT OR REPLACE INTO slicer_jobs (id, stl_name, stl_path, gcode_name, settings, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(job.id, job.stl_name, job.stl_path, job.gcode_name, JSON.stringify(job.settings), job.created_at);
+}
+
+export function getSlicerJobs() {
+  return db.prepare('SELECT * FROM slicer_jobs ORDER BY created_at DESC').all().map(r => ({
+    ...r, settings: JSON.parse(r.settings),
+  }));
+}
+
+export function getSlicerJob(id) {
+  const r = db.prepare('SELECT * FROM slicer_jobs WHERE id = ?').get(id);
+  return r ? { ...r, settings: JSON.parse(r.settings) } : null;
+}
+
+export function deleteSlicerJob(id) {
+  db.prepare('DELETE FROM slicer_jobs WHERE id = ?').run(id);
+}
+
 // Seed defaults
 const defaults = {
   printer_ip: '192.168.4.41',

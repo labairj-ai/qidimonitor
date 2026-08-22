@@ -5,13 +5,16 @@ AI-powered 3D print monitor and slicer dashboard for the QIDI X-Plus 3. Streams 
 ## Features
 
 - **Live camera feed** — MJPEG stream via client-side parser (28fps, no freezing)
-- **Print status** — real-time temps, speeds, Z height, fan%, filament type
-- **AI diagnosis** — Ollama vision model analyzes snapshots for stringing, warping, under-extrusion, spaghetti, etc.; runs manually or on a timer
+- **Print status** — real-time temps, progress bar with time remaining, elapsed time, filament used, live speed/flow override sliders
+- **Speed & flow control** — M220 (print speed 25–200%) and M221 (flow rate 50–150%) sliders applied live mid-print via Moonraker gcode endpoint; independent controls, values sync from printer each poll
+- **AI diagnosis** — Ollama vision model (`llava:13b`) analyzes snapshots for stringing, warping, under-extrusion, spaghetti, etc.; each issue includes what was observed + a specific fix; runs manually or on a timer
+- **AI chat** — after any diagnosis, chat with the AI to understand root cause (settings vs. file vs. material vs. mechanical); full printer context and issue details injected into every message
 - **Printer context** — injects live printer state + material profiles into AI prompts for better diagnosis
-- **STL slicer** — drag-and-drop STL → OrcaSlicer CLI → G-code uploaded directly to printer; supports, brim, infill, and pattern configurable; 3D WebGL model preview with orbit controls
+- **STL slicer** — drag-and-drop STL → OrcaSlicer CLI → G-code uploaded directly to printer; 3D WebGL model preview with X/Y/Z rotation controls (rotation baked into STL before slicing)
+- **Re-slice** — sliced STLs are stored server-side; G-code files with a stored STL show a "Re-slice" button that reopens the slicer pre-filled with original settings
 - **File manager** — list, upload, and delete G-code files on the printer; start/pause/resume/cancel prints
 - **Auto-discovery** — TCP-scans the subnet for Moonraker when the printer's DHCP IP changes
-- **Diagnosis history** — saved snapshots, printer context, and AI findings per run
+- **Diagnosis history** — saved snapshots, printer context, and AI findings per run; collapsed cards show which issues triggered each warning
 
 ## Stack
 
@@ -20,7 +23,7 @@ AI-powered 3D print monitor and slicer dashboard for the QIDI X-Plus 3. Streams 
 | Frontend | React 18 + Vite + Three.js (STL viewer) |
 | Backend | Node.js + Express (ESM) |
 | Database | SQLite via `node:sqlite` (requires `--experimental-sqlite`) |
-| AI | Ollama vision model on Mac Studio (`llava:13b` default) |
+| AI | Ollama `/api/generate` for vision diagnosis; `/api/chat` for follow-up conversation |
 | Slicer | OrcaSlicer 2.4+ CLI with built-in QIDI X-Plus 3 profiles |
 | Printer API | Moonraker at `http://PRINTER_IP:7125` |
 | Camera | mjpg-streamer on printer (YUYV + software JPEG, 320×240 @ ~28fps) |
@@ -37,8 +40,9 @@ pm2 logs qidimonitor      # tail logs
 PM2 config: `ecosystem.config.cjs` — sets CWD, DB path, snapshots dir, port.
 
 Runtime data lives at `~/qidimonitor/` (gitignored):
-- `qidimonitor.db` — config + diagnosis history
+- `qidimonitor.db` — config + diagnosis history + slicer job records
 - `snapshots/` — saved images from each diagnosis run
+- `stls/` — original STL files stored for re-slicing
 
 ## Deploy
 
@@ -80,12 +84,17 @@ Then `sudo systemctl restart webcamd`. Raise `-q` for sharper frames at the cost
 
 ### Ollama
 
-Ollama runs on the Mac Studio (`100.73.128.40:11434`). A vision-capable model must be pulled:
+Ollama runs on the Mac Studio (`100.73.128.40:11434`). Must be started with `OLLAMA_HOST=0.0.0.0:11434` so it accepts remote connections, and a vision-capable model must be pulled:
 
 ```bash
 ssh labairj64@100.73.128.40
-ollama pull llava:13b        # current default (~7.4 GB)
+OLLAMA_HOST=0.0.0.0:11434 ollama serve &
+ollama pull llava:13b        # ~8 GB
 ```
+
+**Important:** the app uses `/api/generate` (not `/api/chat`) for image diagnosis — `/api/chat` with images returns empty responses on llava:13b with Ollama 0.32.x. Follow-up chat uses `/api/chat` (text-only, works fine).
+
+If the model returns empty responses, re-pull it: `ollama pull llava:13b`. A corrupted mmproj (vision encoder) from an incomplete download is the usual cause.
 
 Change the active model and Ollama URL in Settings. The model must support image inputs.
 
@@ -97,7 +106,15 @@ OrcaSlicer must be installed on the Mac mini:
 brew install --cask orcaslicer
 ```
 
-The slicer route calls `/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer` with the built-in `Qidi X-Plus 3 0.4 nozzle` machine profile. Supported materials: PLA, PLA+, PETG, ABS, ASA, TPU, PA-CF.
+The slicer route calls `/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer` with the built-in `Qidi X-Plus 3 0.4 nozzle` machine profile. A single override JSON that `inherits` the quality preset is passed — loading two process JSONs causes a "duplicate process config" error.
+
+**Supported materials:** PLA, PLA+, PETG, ABS, ASA, TPU, PA-CF
+
+**Configurable settings:** quality preset (0.12–0.28mm), supports (none/normal/tree, build-plate-only option), brim type + width, infill density + pattern, wall loops, top/bottom shell layers, ironing (none/top/topmost/all solid), seam position (aligned/back/random/nearest)
+
+**Model rotation:** X/Y/Z rotation controls appear below the 3D viewer after loading an STL. Rotation is baked into the geometry (via Three.js STLExporter) before sending to OrcaSlicer, so the model slices in the correct orientation.
+
+**Re-slice:** after each successful slice the original STL is saved to `~/qidimonitor/stls/`. G-code files in the file manager that originated from the slicer show a "Re-slice" button — clicking it pre-fills all prior settings in the Slicer panel so you can tweak and re-run without re-uploading the STL.
 
 ## Network
 
@@ -108,27 +125,27 @@ The Mac mini sits on the `192.168.4.x` subnet with the printer. The Optiplex (wi
 ```
 server/
   index.js            — Express app + auto-monitor loop
-  db.js               — SQLite setup, config, diagnosis CRUD
+  db.js               — SQLite setup, config, diagnosis CRUD, slicer job CRUD
   discovery.js        — subnet TCP scan for auto-discovery
-  printerContext.js   — fetch full printer state for AI prompt
+  printerContext.js   — fetch full printer state; computes time remaining from slicer estimate + progress
   materialProfiles.js — QIDI recommended temp/speed ranges per filament
   routes/
     config.js         — GET/POST /api/config
-    printer.js        — status, snapshot, stream, discover, context
-    diagnose.js       — POST /api/diagnose, GET /api/history
+    printer.js        — status, snapshot, stream, discover, context, gcode (M220/M221)
+    diagnose.js       — POST /api/diagnose (vision), POST /api/diagnose/chat (follow-up), GET /api/history
     files.js          — list, upload, delete, print controls
-    slicer.js         — STL slice via OrcaSlicer CLI + upload to printer
+    slicer.js         — STL slice + re-slice via OrcaSlicer CLI; stores STLs + job records; uploads G-code to printer
 
 client/src/
   App.jsx             — tab layout (Monitor / Files / History / Settings)
   components/
     LiveFeed.jsx      — MJPEG stream parser, reconnect, watchdog
-    PrintStatus.jsx   — live temps, speed, filament badge, print controls
-    DiagnosePanel.jsx — manual diagnosis trigger + result display
+    PrintStatus.jsx   — temps, progress + time remaining, speed/flow sliders, print controls
+    DiagnosePanel.jsx — diagnosis trigger, issue cards with description + fix, AI chat thread
     AutoMonitor.jsx   — auto-diagnosis toggle + interval
-    FileManager.jsx   — file list, upload with progress, delete, print
-    Slicer.jsx        — STL drop zone, 3D viewer, settings, slice + upload
-    STLViewer.jsx     — Three.js WebGL viewer with OrbitControls
-    History.jsx       — diagnosis history with printer context panel
+    FileManager.jsx   — file list, upload with progress, delete, print; Re-slice button for STL-backed files
+    Slicer.jsx        — STL drop zone, 3D viewer, rotation controls, full settings, slice + upload; re-slice support
+    STLViewer.jsx     — Three.js WebGL viewer with OrbitControls; exposes getTransformedSTL() via ref
+    History.jsx       — diagnosis history; collapsed cards show triggered issues; expanded shows description + fix
     Settings.jsx      — printer IP, camera URL, Ollama config
 ```
