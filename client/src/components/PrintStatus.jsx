@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 
 function TempGauge({ label, actual, target }) {
   return (
@@ -20,32 +20,54 @@ const STATE_COLORS = {
   complete: 'var(--accent)',
 };
 
-export default function PrintStatus({ config }) {
+export default function PrintStatus({ config, onPrinterFound }) {
   const [status, setStatus] = useState(null);
   const [error, setError] = useState(null);
+  const [discovering, setDiscovering] = useState(false);
+  const [foundIp, setFoundIp] = useState(null);
+
+  const poll = useCallback(async () => {
+    if (!config?.printer_ip && !config?.moonraker_url) return;
+    try {
+      const r = await fetch('/api/printer/status');
+      if (!r.ok) throw new Error(await r.text());
+      setStatus(await r.json());
+      setError(null);
+      setFoundIp(null);
+    } catch (e) {
+      setError(e.message);
+    }
+  }, [config?.printer_ip, config?.moonraker_url]);
 
   useEffect(() => {
-    if (!config?.printer_ip && !config?.moonraker_url) return;
-    const poll = async () => {
-      try {
-        const r = await fetch('/api/printer/status');
-        if (!r.ok) throw new Error(await r.text());
-        setStatus(await r.json());
-        setError(null);
-      } catch (e) {
-        setError(e.message);
-      }
-    };
     poll();
     const id = setInterval(poll, 5000);
     return () => clearInterval(id);
-  }, [config?.printer_ip, config?.moonraker_url]);
+  }, [poll]);
+
+  const runDiscovery = async () => {
+    setDiscovering(true);
+    setFoundIp(null);
+    try {
+      const r = await fetch('/api/printer/discover', { method: 'POST' });
+      const data = await r.json();
+      if (data.status === 'found') {
+        setFoundIp(data.ip);
+        setError(null);
+        onPrinterFound?.();
+        setTimeout(poll, 500);
+      }
+    } catch (e) {
+      // silent
+    } finally {
+      setDiscovering(false);
+    }
+  };
 
   const stats = status?.print_stats;
   const extruder = status?.extruder;
   const bed = status?.heater_bed;
   const display = status?.display_status;
-
   const progressPct = display?.progress != null ? Math.round(display.progress * 100) : null;
   const state = stats?.state || 'unknown';
 
@@ -63,18 +85,41 @@ export default function PrintStatus({ config }) {
       {!config?.printer_ip && !config?.moonraker_url ? (
         <p style={{ color: 'var(--muted)', fontSize: 13 }}>Configure printer IP in Settings</p>
       ) : error ? (
-        <p style={{ color: 'var(--crit)', fontSize: 13 }}>Unreachable: {error}</p>
+        <div>
+          {foundIp ? (
+            <p style={{ color: 'var(--ok)', fontSize: 13 }}>Found at {foundIp} — reconnecting…</p>
+          ) : discovering ? (
+            <p style={{ color: 'var(--accent)', fontSize: 13 }}>Scanning network for printer…</p>
+          ) : (
+            <>
+              <p style={{ color: 'var(--crit)', fontSize: 13, marginBottom: 10 }}>Printer unreachable</p>
+              <button
+                onClick={runDiscovery}
+                style={{
+                  background: 'var(--accent)',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 6,
+                  padding: '6px 14px',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                Find Printer
+              </button>
+            </>
+          )}
+        </div>
       ) : !status ? (
         <p style={{ color: 'var(--muted)', fontSize: 13 }}>Connecting…</p>
       ) : (
         <>
-          {/* Temps */}
           <div style={{ display: 'flex', gap: 24, marginBottom: 14 }}>
             <TempGauge label="Nozzle" actual={extruder?.temperature} target={extruder?.target} />
             <TempGauge label="Bed" actual={bed?.temperature} target={bed?.target} />
           </div>
 
-          {/* Progress */}
           {progressPct != null && (
             <div style={{ marginBottom: 8 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--muted)', marginBottom: 4 }}>

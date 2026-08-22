@@ -63,7 +63,7 @@ export default function App() {
           <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))' }}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               <LiveFeed config={config} />
-              <PrintStatus config={config} />
+              <PrintStatus config={config} onPrinterFound={loadConfig} />
               <AutoMonitor config={config} onConfigChange={loadConfig} />
             </div>
             <DiagnosePanel config={config} onResult={setLastResult} latestResult={lastResult} />
