@@ -2,6 +2,57 @@ import React, { useState, useEffect } from 'react';
 
 const SEV_COLORS = { ok: 'var(--ok)', warning: 'var(--warn)', critical: 'var(--crit)' };
 
+function ContextRow({ label, value }) {
+  if (value == null || value === '') return null;
+  return (
+    <div style={{ display: 'flex', gap: 8, fontSize: 12 }}>
+      <span style={{ color: 'var(--muted)', minWidth: 140 }}>{label}</span>
+      <span>{value}</span>
+    </div>
+  );
+}
+
+function PrinterContextPanel({ ctx }) {
+  if (!ctx) return null;
+  const pc = ctx.printer_config;
+  return (
+    <div style={{ marginTop: 12, padding: '10px 12px', background: 'var(--surface2)', borderRadius: 6 }}>
+      <div style={{ fontWeight: 600, fontSize: 12, color: 'var(--muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+        Printer State at Diagnosis
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 32px' }}>
+        <ContextRow label="Print state" value={ctx.print_state} />
+        <ContextRow label="Progress" value={ctx.progress_pct != null ? `${ctx.progress_pct}%` : null} />
+        <ContextRow label="Duration" value={ctx.print_duration_min != null ? `${ctx.print_duration_min} min` : null} />
+        <ContextRow label="Z height" value={ctx.z_mm != null ? `${ctx.z_mm}mm` : null} />
+        <ContextRow label="Nozzle temp" value={ctx.nozzle_temp != null ? `${ctx.nozzle_temp}°C → ${ctx.nozzle_target}°C target` : null} />
+        <ContextRow label="Bed temp" value={ctx.bed_temp != null ? `${ctx.bed_temp}°C → ${ctx.bed_target}°C target` : null} />
+        <ContextRow label="Chamber temp" value={ctx.chamber_temp != null ? `${ctx.chamber_temp}°C → ${ctx.chamber_target}°C target` : null} />
+        <ContextRow label="Part cooling fan" value={ctx.fan_pct != null ? `${ctx.fan_pct}%` : null} />
+        <ContextRow label="Speed override" value={ctx.speed_factor_pct != null && ctx.speed_factor_pct !== 100 ? `${ctx.speed_factor_pct}%` : null} />
+        <ContextRow label="Flow override" value={ctx.flow_pct != null && ctx.flow_pct !== 100 ? `${ctx.flow_pct}%` : null} />
+        <ContextRow label="Pressure advance" value={ctx.pressure_advance} />
+        <ContextRow label="Layer height" value={ctx.layer_height ? `${ctx.layer_height}mm` : null} />
+        <ContextRow label="Filament type" value={ctx.filament_type} />
+        <ContextRow label="Slicer" value={ctx.slicer} />
+        {pc && <>
+          <ContextRow label="Nozzle diameter" value={pc.nozzle_diameter ? `${pc.nozzle_diameter}mm` : null} />
+          <ContextRow label="Max velocity" value={pc.max_velocity ? `${pc.max_velocity}mm/s` : null} />
+          <ContextRow label="Max accel" value={pc.max_accel ? `${pc.max_accel}mm/s²` : null} />
+          <ContextRow label="Kinematics" value={pc.kinematics} />
+          <ContextRow label="Input shaper X" value={pc.input_shaper_x} />
+          <ContextRow label="Input shaper Y" value={pc.input_shaper_y} />
+        </>}
+        {ctx.filament_detected === false && (
+          <div style={{ fontSize: 12, color: 'var(--crit)', fontWeight: 600, marginTop: 4 }}>
+            ⚠ Filament runout detected at time of diagnosis
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function History() {
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -42,6 +93,8 @@ export default function History() {
               </div>
               <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 2 }}>
                 {new Date(r.timestamp).toLocaleString()}
+                {r.printer_context?.z_mm != null && <span style={{ marginLeft: 8 }}>Z {r.printer_context.z_mm}mm</span>}
+                {r.printer_context?.nozzle_temp != null && <span style={{ marginLeft: 8 }}>🌡 {r.printer_context.nozzle_temp}°</span>}
               </div>
             </div>
             <span style={{ color: 'var(--muted)', fontSize: 14 }}>{expanded === r.id ? '▲' : '▼'}</span>
@@ -60,6 +113,7 @@ export default function History() {
               ) : (
                 <p style={{ fontSize: 13, color: 'var(--ok)' }}>No issues detected</p>
               )}
+              <PrinterContextPanel ctx={r.printer_context} />
             </div>
           )}
         </div>

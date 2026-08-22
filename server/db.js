@@ -25,9 +25,13 @@ db.exec(`
     issues TEXT,
     overall_severity TEXT,
     raw_response TEXT,
-    auto_triggered INTEGER DEFAULT 0
+    auto_triggered INTEGER DEFAULT 0,
+    printer_context TEXT
   );
 `);
+
+// Add printer_context column to existing DBs that predate this schema
+try { db.exec(`ALTER TABLE diagnoses ADD COLUMN printer_context TEXT`); } catch { /* already exists */ }
 
 // Seed defaults
 const defaults = {
@@ -65,8 +69,8 @@ export function setConfig(updates) {
 
 export function insertDiagnosis(record) {
   return db.prepare(`
-    INSERT INTO diagnoses (timestamp, image_path, print_file, issues, overall_severity, raw_response, auto_triggered)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO diagnoses (timestamp, image_path, print_file, issues, overall_severity, raw_response, auto_triggered, printer_context)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     record.timestamp,
     record.image_path || null,
@@ -75,6 +79,7 @@ export function insertDiagnosis(record) {
     record.overall_severity,
     record.raw_response,
     record.auto_triggered ? 1 : 0,
+    record.printer_context ? JSON.stringify(record.printer_context) : null,
   );
 }
 
@@ -83,6 +88,7 @@ export function getHistory(limit = 50) {
     ...r,
     issues: JSON.parse(r.issues || '[]'),
     auto_triggered: !!r.auto_triggered,
+    printer_context: r.printer_context ? JSON.parse(r.printer_context) : null,
   }));
 }
 
