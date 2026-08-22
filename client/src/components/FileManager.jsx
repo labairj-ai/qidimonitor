@@ -31,7 +31,7 @@ export default function FileManager() {
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(null);
+  const [uploadProgress, setUploadProgress] = useState(null); // { name, pct, loaded, total, phase }
   const [starting, setStarting] = useState(null);
   const [deleting, setDeleting] = useState(null);
   const [search, setSearch] = useState('');
@@ -54,23 +54,43 @@ export default function FileManager() {
 
   useEffect(() => { loadFiles(); }, [loadFiles]);
 
-  const uploadFile = async (file) => {
+  const uploadFile = (file) => {
     if (!file) return;
     setUploading(true);
-    setUploadProgress(`Uploading ${file.name}…`);
+    setUploadProgress({ name: file.name, pct: 0, loaded: 0, total: file.size, phase: 'uploading' });
+
     const form = new FormData();
     form.append('file', file);
-    try {
-      const r = await fetch('/api/files/upload', { method: 'POST', body: form });
-      if (!r.ok) throw new Error(await r.text());
-      setUploadProgress(null);
-      await loadFiles();
-    } catch (e) {
-      setUploadProgress(null);
-      alert(`Upload failed: ${e.message}`);
-    } finally {
+    const xhr = new XMLHttpRequest();
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        setUploadProgress({ name: file.name, pct: Math.round(e.loaded / e.total * 100), loaded: e.loaded, total: e.total, phase: 'uploading' });
+      }
+    };
+
+    xhr.upload.onload = () => {
+      setUploadProgress(prev => ({ ...prev, pct: 100, phase: 'processing' }));
+    };
+
+    xhr.onload = async () => {
       setUploading(false);
-    }
+      setUploadProgress(null);
+      if (xhr.status >= 200 && xhr.status < 300) {
+        await loadFiles();
+      } else {
+        alert(`Upload failed: ${xhr.responseText}`);
+      }
+    };
+
+    xhr.onerror = () => {
+      setUploading(false);
+      setUploadProgress(null);
+      alert('Upload failed: network error');
+    };
+
+    xhr.open('POST', '/api/files/upload');
+    xhr.send(form);
   };
 
   const startPrint = async (filename) => {
@@ -144,8 +164,36 @@ export default function FileManager() {
           style={{ display: 'none' }}
           onChange={e => uploadFile(e.target.files[0])}
         />
-        {uploading ? (
-          <p style={{ color: 'var(--accent)', margin: 0, fontSize: 14 }}>{uploadProgress}</p>
+        {uploading && uploadProgress ? (
+          <div style={{ width: '100%' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+              <span style={{ fontSize: 13, color: 'var(--text)', fontWeight: 600, maxWidth: '70%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {uploadProgress.name}
+              </span>
+              <span style={{ fontSize: 12, color: 'var(--accent)', fontWeight: 700 }}>
+                {uploadProgress.phase === 'processing' ? 'Processing…' : `${uploadProgress.pct}%`}
+              </span>
+            </div>
+            <div style={{ background: 'var(--border)', borderRadius: 4, height: 6, overflow: 'hidden' }}>
+              <div style={{
+                height: '100%',
+                width: `${uploadProgress.pct}%`,
+                background: uploadProgress.phase === 'processing' ? 'var(--ok)' : 'var(--accent)',
+                borderRadius: 4,
+                transition: 'width 0.15s ease',
+              }} />
+            </div>
+            {uploadProgress.phase === 'uploading' && (
+              <p style={{ margin: '6px 0 0', fontSize: 11, color: 'var(--muted)' }}>
+                {fmtSize(uploadProgress.loaded)} / {fmtSize(uploadProgress.total)}
+              </p>
+            )}
+            {uploadProgress.phase === 'processing' && (
+              <p style={{ margin: '6px 0 0', fontSize: 11, color: 'var(--muted)' }}>
+                Saving to printer…
+              </p>
+            )}
+          </div>
         ) : (
           <>
             <p style={{ color: 'var(--muted)', margin: '0 0 4px', fontSize: 14 }}>
