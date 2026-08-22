@@ -39,7 +39,7 @@ const defaults = {
   camera_url: '',
   moonraker_url: '',
   ollama_url: process.env.OLLAMA_URL || 'http://100.73.128.40:11434',
-  ollama_model: 'qwen2.5-vl:7b',
+  ollama_model: 'llava:13b',
   auto_enabled: '0',
   auto_interval_min: '10',
 };
