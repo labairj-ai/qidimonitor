@@ -46,37 +46,67 @@ router.get('/options', (_req, res) => {
 router.post('/slice', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No STL file provided' });
 
-  const { material = 'PLA', quality = 'Standard (0.20mm)' } = req.body;
+  const {
+    material = 'PLA',
+    quality = 'Standard (0.20mm)',
+    supports = 'none',
+    supportBuildPlateOnly = '0',
+    brim = 'no_brim',
+    brimWidth = '5',
+    infillDensity = '15',
+    infillPattern = 'grid',
+  } = req.body;
+
   const filamentJson = FILAMENTS[material];
   const processJson = QUALITY_PRESETS[quality];
-
   if (!filamentJson) return res.status(400).json({ error: `Unknown material: ${material}` });
   if (!processJson) return res.status(400).json({ error: `Unknown quality: ${quality}` });
 
-  // Write STL to a temp directory
+  // Write STL + build override JSON
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qidi-slice-'));
   const stlPath = path.join(tmpDir, req.file.originalname);
   const outDir = path.join(tmpDir, 'out');
   fs.mkdirSync(outDir);
   fs.writeFileSync(stlPath, req.file.buffer);
 
-  try {
-    // Run OrcaSlicer
-    const log = await runSlicer(stlPath, outDir, filamentJson, processJson);
+  // Build process override
+  const overrides = {
+    type: 'process',
+    name: 'qidi_monitor_override',
+    inherits: quality.replace(/ @Qidi.*/, ''), // strip printer suffix for inheritance
+    from: 'system',
+    instantiation: 'true',
+    compatible_printers: ['Qidi X-Plus 3 0.4 nozzle'],
+    sparse_infill_density: `${infillDensity}%`,
+    sparse_infill_pattern: infillPattern,
+    brim_type: brim,
+    brim_width: brimWidth,
+  };
 
-    // Find the generated G-code file
+  if (supports === 'none') {
+    overrides.enable_support = '0';
+  } else {
+    overrides.enable_support = '1';
+    overrides.support_type = supports === 'tree' ? 'tree(auto)' : 'normal(auto)';
+    overrides.support_on_build_plate_only = supportBuildPlateOnly === '1' ? '1' : '0';
+  }
+
+  const overrideJsonPath = path.join(tmpDir, 'overrides.json');
+  fs.writeFileSync(overrideJsonPath, JSON.stringify(overrides));
+
+  try {
+    const log = await runSlicer(stlPath, outDir, filamentJson, processJson, overrideJsonPath);
+
     const gcodeFile = fs.readdirSync(outDir).find(f => f.endsWith('.gcode'));
-    if (!gcodeFile) throw new Error(`Slicing produced no G-code output.\n${log}`);
+    if (!gcodeFile) throw new Error(`Slicing produced no G-code.\n${log}`);
 
     const gcodePath = path.join(outDir, gcodeFile);
     const gcodeBuffer = fs.readFileSync(gcodePath);
     const gcodeSize = gcodeBuffer.length;
 
-    // Derive a clean output filename
     const baseName = req.file.originalname.replace(/\.stl$/i, '');
     const outputName = `${baseName}_${material}_${quality.replace(/[^a-z0-9]/gi, '_')}.gcode`;
 
-    // Upload G-code to the printer via Moonraker
     const config = getConfig();
     const moonrakerBase = config.moonraker_url || (config.printer_ip ? `http://${config.printer_ip}:7125` : null);
     if (!moonrakerBase) throw new Error('Printer not configured');
@@ -84,26 +114,29 @@ router.post('/slice', upload.single('file'), async (req, res) => {
     const form = new FormData();
     form.append('file', new Blob([gcodeBuffer]), outputName);
     form.append('root', 'gcodes');
-
     const uploadRes = await fetch(`${moonrakerBase}/server/files/upload`, {
-      method: 'POST',
-      body: form,
-      signal: AbortSignal.timeout(60000),
+      method: 'POST', body: form, signal: AbortSignal.timeout(60000),
     });
     if (!uploadRes.ok) throw new Error(`Printer upload failed: ${await uploadRes.text()}`);
 
-    res.json({ filename: outputName, size: gcodeSize, material, quality });
+    res.json({
+      filename: outputName, size: gcodeSize, material, quality,
+      supports, supportBuildPlateOnly: supportBuildPlateOnly === '1',
+      brim, brimWidth: Number(brimWidth),
+      infillDensity: Number(infillDensity), infillPattern,
+    });
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
 
-function runSlicer(stlPath, outDir, filamentJson, processJson) {
+function runSlicer(stlPath, outDir, filamentJson, processJson, overrideJsonPath) {
   return new Promise((resolve, reject) => {
     const args = [
       '--load-settings', MACHINE,
       '--load-filaments', filamentJson,
       '--load-settings', processJson,
+      '--load-settings', overrideJsonPath,
       '--outputdir', outDir,
       '--slice', '0',
       stlPath,
