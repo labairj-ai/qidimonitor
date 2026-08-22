@@ -115,7 +115,7 @@ async function runDiagnosis({ imageBuffer, imagePath, printFile, autoTriggered, 
 }
 
 // POST /api/diagnose — accepts multipart file OR triggers live snapshot
-router.post('/', upload.single('image'), async (req, res) => {
+router.post('/diagnose', upload.single('image'), async (req, res) => {
   const config = getConfig();
   let imageBuffer;
   let imagePath = null;
