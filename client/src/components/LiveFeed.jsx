@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 
 // Parse an MJPEG stream by looking for JPEG SOI (FF D8) / EOI (FF D9) markers.
 // Calls onFrame(Uint8Array) for each complete JPEG frame.
+const FRAME_TIMEOUT_MS = 4000; // reconnect if no frame in 4s
+
 async function consumeMjpeg(signal, onFrame) {
   const res = await fetch('/api/printer/stream', { signal });
   const reader = res.body.getReader();
@@ -15,34 +17,44 @@ async function consumeMjpeg(signal, onFrame) {
     return c;
   };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  // Watchdog: abort if no frame arrives within FRAME_TIMEOUT_MS
+  let watchdog = null;
+  const resetWatchdog = () => {
+    clearTimeout(watchdog);
+    watchdog = setTimeout(() => reader.cancel(), FRAME_TIMEOUT_MS);
+  };
+  resetWatchdog();
 
-    buf = append(buf, value);
-
-    // Extract all complete JPEG frames from the buffer
+  try {
     while (true) {
-      // Find SOI marker (FF D8)
-      let start = -1;
-      for (let i = 0; i < buf.length - 1; i++) {
-        if (buf[i] === 0xFF && buf[i + 1] === 0xD8) { start = i; break; }
-      }
-      if (start < 0) { buf = new Uint8Array(0); break; }
+      const { done, value } = await reader.read();
+      if (done) break;
 
-      // Find EOI marker (FF D9) after SOI
-      let end = -1;
-      for (let i = start + 2; i < buf.length - 1; i++) {
-        if (buf[i] === 0xFF && buf[i + 1] === 0xD9) { end = i + 2; break; }
-      }
-      if (end < 0) break; // frame not complete yet — wait for more data
+      resetWatchdog();
+      buf = append(buf, value);
 
-      onFrame(buf.slice(start, end));
-      buf = buf.slice(end);
+      // Extract all complete JPEG frames from the buffer
+      while (true) {
+        let start = -1;
+        for (let i = 0; i < buf.length - 1; i++) {
+          if (buf[i] === 0xFF && buf[i + 1] === 0xD8) { start = i; break; }
+        }
+        if (start < 0) { buf = new Uint8Array(0); break; }
+
+        let end = -1;
+        for (let i = start + 2; i < buf.length - 1; i++) {
+          if (buf[i] === 0xFF && buf[i + 1] === 0xD9) { end = i + 2; break; }
+        }
+        if (end < 0) break;
+
+        onFrame(buf.slice(start, end));
+        buf = buf.slice(end);
+      }
+
+      if (buf.length > 2 * 1024 * 1024) buf = new Uint8Array(0);
     }
-
-    // Safety valve: if buffer grows > 2MB without a complete frame, reset
-    if (buf.length > 2 * 1024 * 1024) buf = new Uint8Array(0);
+  } finally {
+    clearTimeout(watchdog);
   }
 }
 

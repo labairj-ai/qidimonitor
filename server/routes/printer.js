@@ -94,8 +94,13 @@ router.get('/stream', async (req, res) => {
     if (!r.ok) throw new Error(`Stream ${r.status}`);
     res.set('Content-Type', r.headers.get('content-type') || 'multipart/x-mixed-replace');
     res.set('Cache-Control', 'no-cache');
+    res.set('X-Accel-Buffering', 'no'); // disable nginx buffering if present
+    res.flushHeaders();                  // send headers immediately, don't buffer
     r.body.pipe(res);
-    req.on('close', () => r.body.destroy());
+    const cleanup = () => r.body.destroy();
+    req.on('close', cleanup);
+    req.on('error', cleanup);
+    r.body.on('error', () => res.destroy());
   } catch (e) {
     res.status(503).json({ error: e.message });
   }
