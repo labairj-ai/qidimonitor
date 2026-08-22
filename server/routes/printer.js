@@ -90,12 +90,12 @@ router.get('/stream', async (req, res) => {
   if (!url) return res.status(400).json({ error: 'Printer IP not configured' });
 
   try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    const r = await fetch(url); // no timeout — stream runs until client disconnects
     if (!r.ok) throw new Error(`Stream ${r.status}`);
     res.set('Content-Type', r.headers.get('content-type') || 'multipart/x-mixed-replace');
     res.set('Cache-Control', 'no-cache');
-    res.set('X-Accel-Buffering', 'no'); // disable nginx buffering if present
-    res.flushHeaders();                  // send headers immediately, don't buffer
+    res.set('X-Accel-Buffering', 'no');
+    res.flushHeaders();
     r.body.pipe(res);
     const cleanup = () => r.body.destroy();
     req.on('close', cleanup);
