@@ -37,7 +37,9 @@ export default function FileManager() {
   const [search, setSearch] = useState('');
   const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState(null);
+  const [justUploaded, setJustUploaded] = useState(null);
   const fileInputRef = useRef();
+  const listTopRef = useRef();
 
   const loadFiles = useCallback(async () => {
     try {
@@ -77,7 +79,11 @@ export default function FileManager() {
       setUploading(false);
       setUploadProgress(null);
       if (xhr.status >= 200 && xhr.status < 300) {
+        setSearch('');
+        setJustUploaded(file.name);
         await loadFiles();
+        listTopRef.current?.scrollIntoView({ behavior: 'smooth' });
+        setTimeout(() => setJustUploaded(null), 6000);
       } else {
         alert(`Upload failed: ${xhr.responseText}`);
       }
@@ -234,18 +240,20 @@ export default function FileManager() {
       ) : filtered.length === 0 ? (
         <p style={{ color: 'var(--muted)', fontSize: 13 }}>No files found.</p>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div ref={listTopRef} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {filtered.map(f => {
-            const name = f.path.replace(/\.gcode$/i, '');
+            const name = f.path.replace(/\.(gcode|gco|g)$/i, '');
             const meta = f.meta;
             const isStarting = starting === f.path;
             const isDeleting = deleting === f.path;
+            const isNew = justUploaded && f.path === justUploaded;
             return (
-              <div key={f.path} className="card" style={{ padding: '12px 14px' }}>
+              <div key={f.path} className="card" style={{ padding: '12px 14px', outline: isNew ? '2px solid var(--ok)' : 'none', outlineOffset: -1 }}>
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4, wordBreak: 'break-word' }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4, wordBreak: 'break-word', display: 'flex', alignItems: 'center', gap: 6 }}>
                       {name}
+                      {isNew && <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--ok)', background: 'rgba(80,200,120,0.12)', padding: '1px 6px', borderRadius: 3 }}>NEW</span>}
                     </div>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: meta ? 6 : 0 }}>
                       <MetaBadge>{fmtSize(f.size)}</MetaBadge>
