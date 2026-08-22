@@ -70,6 +70,17 @@ export default function PrintStatus({ config, onPrinterFound }) {
     }
   };
 
+  const [controlling, setControlling] = useState(null);
+
+  const printAction = async (action) => {
+    setControlling(action);
+    try {
+      await fetch(`/api/files/print/${action}`, { method: 'POST' });
+      setTimeout(poll, 800);
+    } catch {}
+    finally { setControlling(null); }
+  };
+
   const stats = status?.print_stats;
   const extruder = status?.extruder;
   const bed = status?.heater_bed;
@@ -170,6 +181,36 @@ export default function PrintStatus({ config, onPrinterFound }) {
               <div style={{ background: 'var(--surface2)', borderRadius: 4, height: 6 }}>
                 <div style={{ background: 'var(--accent)', width: `${progressPct}%`, height: '100%', borderRadius: 4, transition: 'width 0.5s' }} />
               </div>
+            </div>
+          )}
+
+          {/* Print controls */}
+          {(state === 'printing' || state === 'paused') && (
+            <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+              {state === 'printing' ? (
+                <button
+                  onClick={() => printAction('pause')}
+                  disabled={!!controlling}
+                  style={{ background: 'var(--warn)', color: '#000', border: 'none', borderRadius: 5, padding: '5px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}
+                >
+                  {controlling === 'pause' ? '…' : '⏸ Pause'}
+                </button>
+              ) : (
+                <button
+                  onClick={() => printAction('resume')}
+                  disabled={!!controlling}
+                  style={{ background: 'var(--ok)', color: '#fff', border: 'none', borderRadius: 5, padding: '5px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}
+                >
+                  {controlling === 'resume' ? '…' : '▶ Resume'}
+                </button>
+              )}
+              <button
+                onClick={() => { if (confirm('Cancel print?')) printAction('cancel'); }}
+                disabled={!!controlling}
+                style={{ background: 'none', color: 'var(--crit)', border: '1px solid var(--crit)', borderRadius: 5, padding: '5px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}
+              >
+                {controlling === 'cancel' ? '…' : '✕ Cancel'}
+              </button>
             </div>
           )}
         </>

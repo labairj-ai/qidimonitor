@@ -5,8 +5,9 @@ import PrintStatus from './components/PrintStatus.jsx';
 import AutoMonitor from './components/AutoMonitor.jsx';
 import History from './components/History.jsx';
 import Settings from './components/Settings.jsx';
+import FileManager from './components/FileManager.jsx';
 
-const TABS = ['Monitor', 'History', 'Settings'];
+const TABS = ['Monitor', 'Files', 'History', 'Settings'];
 
 export default function App() {
   const [tab, setTab] = useState('Monitor');
@@ -69,6 +70,7 @@ export default function App() {
             <DiagnosePanel config={config} onResult={setLastResult} latestResult={lastResult} />
           </div>
         )}
+        {tab === 'Files' && <FileManager />}
         {tab === 'History' && <History />}
         {tab === 'Settings' && <Settings config={config} onSave={loadConfig} />}
       </main>
