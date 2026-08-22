@@ -90,17 +90,34 @@ router.get('/stream', async (req, res) => {
   if (!url) return res.status(400).json({ error: 'Printer IP not configured' });
 
   try {
-    const r = await fetch(url); // no timeout — stream runs until client disconnects
+    const r = await fetch(url); // no timeout — stream runs until client disconnects or stall detected
     if (!r.ok) throw new Error(`Stream ${r.status}`);
     res.set('Content-Type', r.headers.get('content-type') || 'multipart/x-mixed-replace');
     res.set('Cache-Control', 'no-cache');
     res.set('X-Accel-Buffering', 'no');
     res.flushHeaders();
+
+    // Server-side stall watchdog: if the printer sends no bytes for 8s, kill the upstream.
+    // The client has a 4s frame watchdog; this is a safety net for cases where the TCP
+    // connection stays open but data stops flowing (WiFi drop without RST).
+    const STALL_MS = 8000;
+    let stallTimer = setTimeout(() => r.body.destroy(), STALL_MS);
+    const resetStall = () => {
+      clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => r.body.destroy(), STALL_MS);
+    };
+    r.body.on('data', resetStall);
+
     r.body.pipe(res);
-    const cleanup = () => r.body.destroy();
+
+    const cleanup = () => {
+      clearTimeout(stallTimer);
+      r.body.destroy();
+    };
     req.on('close', cleanup);
     req.on('error', cleanup);
-    r.body.on('error', () => res.destroy());
+    r.body.on('error', () => { clearTimeout(stallTimer); res.destroy(); });
+    r.body.on('close', () => { clearTimeout(stallTimer); if (!res.writableEnded) res.destroy(); });
   } catch (e) {
     res.status(503).json({ error: e.message });
   }

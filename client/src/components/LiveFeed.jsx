@@ -88,6 +88,10 @@ export default function LiveFeed({ config }) {
       } catch (e) {
         if (controller.signal.aborted) return;
         setStatus('error');
+      }
+      // Stream ended for any reason (watchdog cancel, server close, network error).
+      // Reconnect unless this component is being unmounted (controller aborted).
+      if (!controller.signal.aborted) {
         retryTimer = setTimeout(() => {
           delay = Math.min(delay * 2, 10000);
           connect();
