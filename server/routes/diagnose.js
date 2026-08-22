@@ -68,13 +68,7 @@ async function runDiagnosis({ imageBuffer, imagePath, printFile, autoTriggered, 
     model,
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: userText },
-          { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } },
-        ],
-      },
+      { role: 'user', content: userText, images: [base64] },
     ],
     stream: false,
   };
