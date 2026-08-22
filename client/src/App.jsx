@@ -6,6 +6,7 @@ import AutoMonitor from './components/AutoMonitor.jsx';
 import History from './components/History.jsx';
 import Settings from './components/Settings.jsx';
 import FileManager from './components/FileManager.jsx';
+import Slicer from './components/Slicer.jsx';
 
 const TABS = ['Monitor', 'Files', 'History', 'Settings'];
 
@@ -13,6 +14,7 @@ export default function App() {
   const [tab, setTab] = useState('Monitor');
   const [config, setConfig] = useState(null);
   const [lastResult, setLastResult] = useState(null);
+  const [fileRefreshKey, setFileRefreshKey] = useState(0);
 
   const loadConfig = useCallback(async () => {
     const r = await fetch('/api/config');
@@ -70,7 +72,14 @@ export default function App() {
             <DiagnosePanel config={config} onResult={setLastResult} latestResult={lastResult} />
           </div>
         )}
-        {tab === 'Files' && <FileManager />}
+        {tab === 'Files' && (
+          <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <Slicer onFileUploaded={() => setFileRefreshKey(k => k + 1)} />
+            </div>
+            <FileManager refreshKey={fileRefreshKey} />
+          </div>
+        )}
         {tab === 'History' && <History />}
         {tab === 'Settings' && <Settings config={config} onSave={loadConfig} />}
       </main>

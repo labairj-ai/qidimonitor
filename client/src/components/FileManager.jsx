@@ -27,7 +27,7 @@ function MetaBadge({ children, color }) {
   );
 }
 
-export default function FileManager() {
+export default function FileManager({ refreshKey }) {
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -54,7 +54,7 @@ export default function FileManager() {
     }
   }, []);
 
-  useEffect(() => { loadFiles(); }, [loadFiles]);
+  useEffect(() => { loadFiles(); }, [loadFiles, refreshKey]);
 
   const uploadFile = (file) => {
     if (!file) return;

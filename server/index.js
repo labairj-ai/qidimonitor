@@ -6,6 +6,7 @@ import configRouter from './routes/config.js';
 import printerRouter from './routes/printer.js';
 import diagnoseRouter from './routes/diagnose.js';
 import filesRouter from './routes/files.js';
+import slicerRouter from './routes/slicer.js';
 import { getConfig, insertDiagnosis } from './db.js';
 import { runDiagnosis } from './routes/diagnose.js';
 
@@ -20,6 +21,7 @@ app.use('/api/config', configRouter);
 app.use('/api/printer', printerRouter);
 app.use('/api', diagnoseRouter);
 app.use('/api/files', filesRouter);
+app.use('/api/slicer', slicerRouter);
 
 // Serve React SPA in production
 app.use(express.static(CLIENT_DIST));
