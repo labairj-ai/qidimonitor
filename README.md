@@ -5,10 +5,11 @@ AI-powered 3D print monitor and slicer dashboard for the QIDI X-Plus 3. Streams 
 ## Features
 
 - **Live camera feed** — MJPEG stream via client-side parser (28fps, no freezing); zoom in up to 4× with +/− buttons, drag to pan when zoomed, fullscreen toggle (⤢)
-- **Print status** — real-time temps, progress bar with time remaining, elapsed time, filament used, live speed/flow override sliders
-- **Speed & flow control** — M220 (print speed 25–200%) and M221 (flow rate 50–150%) sliders applied live mid-print via Moonraker gcode endpoint; independent controls, values sync from printer each poll
-- **AI diagnosis** — Ollama vision model (`llava:13b`) analyzes snapshots for stringing, warping, under-extrusion, spaghetti, etc.; each issue includes what was observed + a specific fix; runs manually or on a timer
-- **AI chat** — after any diagnosis, chat with the AI to understand root cause (settings vs. file vs. material vs. mechanical); full printer context and issue details injected into every message
+- **Print status** — real-time temps, progress bar with time remaining (adjusts for active speed override), elapsed time, filament used, live speed/flow/fan sliders
+- **Speed & flow control** — M220 (print speed 25–200%) and M221 (flow rate 50–150%) sliders applied live mid-print via Moonraker gcode endpoint; independent controls, values sync from printer each poll; time remaining scales with speed factor
+- **Fan control** — M106 fan speed slider (0–100%) shown while printing; also configurable as a slicer setting per STL so the G-code bakes in the correct fan speed for the material
+- **AI diagnosis** — Ollama vision model analyzes snapshots for stringing, warping, under-extrusion, spaghetti, etc.; each issue includes what was observed + a specific fix; runs manually or on a timer; `num_ctx` set to 8192 to handle large printer context payloads
+- **AI chat** — after any diagnosis, chat with the AI to understand root cause (settings vs. file vs. material vs. mechanical); defaults to the same Ollama server as diagnosis so it works without a separate LLM running
 - **Printer context** — injects live printer state + material profiles into AI prompts for better diagnosis
 - **STL slicer** — drag-and-drop STL → OrcaSlicer CLI → G-code uploaded directly to printer; 3D WebGL model preview with X/Y/Z rotation controls (rotation baked into STL before slicing)
 - **Re-slice** — sliced STLs are stored server-side; G-code files with a stored STL show a "Re-slice" button that reopens the slicer pre-filled with original settings
@@ -92,11 +93,13 @@ OLLAMA_HOST=0.0.0.0:11434 ollama serve &
 ollama pull llava:13b        # ~8 GB
 ```
 
-**Important:** the app uses `/api/generate` (not `/api/chat`) for image diagnosis — `/api/chat` with images returns empty responses on llava:13b with Ollama 0.32.x. Follow-up chat uses `/api/chat` (text-only, works fine).
+**Important:** the app uses `/api/generate` (not `/api/chat`) for image diagnosis — `/api/chat` with images returns empty responses on some models with Ollama 0.32.x. Follow-up chat uses the OpenAI-compatible `/v1/chat/completions` endpoint on the same Ollama server (text-only, works with any loaded model).
 
-If the model returns empty responses, re-pull it: `ollama pull llava:13b`. A corrupted mmproj (vision encoder) from an incomplete download is the usual cause.
+Both diagnosis and chat requests set `num_ctx: 8192` — the default 4096 is too small once printer context is included in the prompt.
 
-Change the active model and Ollama URL in Settings. The model must support image inputs.
+If the model returns empty responses, re-pull it: `ollama pull <model>`. A corrupted mmproj (vision encoder) from an incomplete download is the usual cause.
+
+Change the active model and Ollama URL in Settings. The model must support image inputs for diagnosis; chat uses the same model text-only.
 
 ### OrcaSlicer (slicer feature)
 
@@ -110,7 +113,7 @@ The slicer route calls `/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer` 
 
 **Supported materials:** PLA, PLA+, PETG, ABS, ASA, TPU, PA-CF
 
-**Configurable settings:** quality preset (0.12–0.28mm), supports (none/normal/tree, build-plate-only option), brim type + width, infill density + pattern, wall loops, top/bottom shell layers, ironing (none/top/topmost/all solid), seam position (aligned/back/random/nearest)
+**Configurable settings:** quality preset (0.12–0.28mm), part cooling fan speed (0–100%), supports (none/normal/tree, build-plate-only option), brim type + width, infill density + pattern, wall loops, top/bottom shell layers, ironing (none/top/topmost/all solid), seam position (aligned/back/random/nearest)
 
 **Model rotation:** X/Y/Z rotation controls appear below the 3D viewer after loading an STL. Rotation is baked into the geometry (via Three.js STLExporter) before sending to OrcaSlicer, so the model slices in the correct orientation.
 
@@ -127,12 +130,12 @@ server/
   index.js            — Express app + auto-monitor loop
   db.js               — SQLite setup, config, diagnosis CRUD, slicer job CRUD
   discovery.js        — subnet TCP scan for auto-discovery
-  printerContext.js   — fetch full printer state; computes time remaining from slicer estimate + progress
+  printerContext.js   — fetch full printer state; time remaining scaled by active speed_factor override
   materialProfiles.js — QIDI recommended temp/speed ranges per filament
   routes/
     config.js         — GET/POST /api/config
-    printer.js        — status, snapshot, stream, discover, context, gcode (M220/M221)
-    diagnose.js       — POST /api/diagnose (vision), POST /api/diagnose/chat (follow-up), GET /api/history
+    printer.js        — status, snapshot, stream, discover, context, gcode (M106/M220/M221)
+    diagnose.js       — POST /api/diagnose (vision, num_ctx 8192), POST /api/diagnose/chat (Ollama /v1/chat/completions), GET /api/history
     files.js          — list, upload, delete, print controls
     slicer.js         — STL slice + re-slice via OrcaSlicer CLI; stores STLs + job records; uploads G-code to printer
 
@@ -140,7 +143,7 @@ client/src/
   App.jsx             — tab layout (Monitor / Files / History / Settings)
   components/
     LiveFeed.jsx      — MJPEG stream parser, reconnect, watchdog; zoom (1–4×) with drag-to-pan and fullscreen
-    PrintStatus.jsx   — temps, progress + time remaining, speed/flow sliders, print controls
+    PrintStatus.jsx   — temps, progress + time remaining (speed-adjusted), fan/speed/flow sliders, print controls
     DiagnosePanel.jsx — diagnosis trigger, issue cards with description + fix, AI chat thread
     AutoMonitor.jsx   — auto-diagnosis toggle + interval
     FileManager.jsx   — file list, upload with progress, delete, print; Re-slice button for STL-backed files
