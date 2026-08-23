@@ -78,8 +78,9 @@ function DiagnosisChat({ result }) {
       const reader = r.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
+      let streamDone = false;
 
-      while (true) {
+      while (!streamDone) {
         const { done, value } = await reader.read();
         if (done) break;
         buf += decoder.decode(value, { stream: true });
@@ -88,7 +89,7 @@ function DiagnosisChat({ result }) {
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue;
           const payload = line.slice(6).trim();
-          if (payload === '[DONE]') break;
+          if (payload === '[DONE]') { streamDone = true; break; }
           try {
             const obj = JSON.parse(payload);
             if (obj.error) throw new Error(obj.error);
@@ -99,8 +100,8 @@ function DiagnosisChat({ result }) {
                 return copy;
               });
             }
-          } catch (parseErr) {
-            if (parseErr.message !== 'Unexpected token') throw parseErr;
+          } catch (e) {
+            if (!(e instanceof SyntaxError)) throw e;
           }
         }
       }

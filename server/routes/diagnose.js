@@ -209,6 +209,7 @@ router.post('/diagnose/chat', async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders(); // send headers immediately so proxies don't time out waiting for first byte
 
   const sendEvent = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
 
@@ -220,17 +221,19 @@ router.post('/diagnose/chat', async (req, res) => {
         model,
         messages: [{ role: 'system', content: systemLines.join('\n') }, ...messages],
         stream: true,
-        options: { num_ctx: 8192 },
       }),
       signal: AbortSignal.timeout(120000),
     });
 
     if (!r.ok) {
-      sendEvent({ error: `Chat LLM ${r.status}: ${await r.text()}` });
+      const errText = await r.text();
+      console.error(`[chat] LLM error ${r.status}: ${errText.slice(0, 200)}`);
+      sendEvent({ error: `Chat LLM ${r.status}: ${errText}` });
       return res.end();
     }
 
     let buf = '';
+    let done = false;
     for await (const chunk of r.body) {
       buf += chunk.toString();
       const lines = buf.split('\n');
@@ -238,16 +241,18 @@ router.post('/diagnose/chat', async (req, res) => {
       for (const line of lines) {
         if (!line.startsWith('data: ')) continue;
         const payload = line.slice(6).trim();
-        if (payload === '[DONE]') { res.write('data: [DONE]\n\n'); return res.end(); }
+        if (payload === '[DONE]') { done = true; break; }
         try {
           const token = JSON.parse(payload).choices?.[0]?.delta?.content || '';
           if (token) sendEvent({ token });
         } catch { /* skip malformed chunk */ }
       }
+      if (done) break;
     }
     res.write('data: [DONE]\n\n');
     res.end();
   } catch (e) {
+    console.error(`[chat] stream error: ${e.message}`);
     sendEvent({ error: e.message });
     res.end();
   }
