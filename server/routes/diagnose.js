@@ -161,8 +161,9 @@ router.post('/diagnose/chat', async (req, res) => {
   if (!messages?.length) return res.status(400).json({ error: 'messages required' });
 
   const config = getConfig();
-  const chatUrl = config.chat_llm_url || 'http://100.73.128.40:8080';
-  const model = config.chat_llm_model || 'mlx-community/Llama-3.3-70B-Instruct-4bit';
+  const ollamaBase = config.ollama_url || 'http://100.73.128.40:11434';
+  const chatUrl = config.chat_llm_url || ollamaBase;
+  const model = config.chat_llm_model || config.ollama_model || 'qwen2.5-vl:7b';
 
   const systemLines = [
     'You are a 3D printing expert helping a user understand a print quality issue on their QIDI X-Plus 3 (CoreXY, 0.4mm nozzle).',
@@ -213,6 +214,7 @@ router.post('/diagnose/chat', async (req, res) => {
         model,
         messages: [{ role: 'system', content: systemLines.join('\n') }, ...messages],
         stream: false,
+        options: { num_ctx: 8192 },
       }),
       signal: AbortSignal.timeout(120000),
     });
