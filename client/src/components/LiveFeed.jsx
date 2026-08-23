@@ -1,7 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 
-// Parse an MJPEG stream by looking for JPEG SOI (FF D8) / EOI (FF D9) markers.
-// Calls onFrame(Uint8Array) for each complete JPEG frame.
 const FRAME_TIMEOUT_MS = 4000; // reconnect if no frame in 4s
 
 async function consumeMjpeg(signal, onFrame) {
@@ -64,7 +62,24 @@ export default function LiveFeed({ config }) {
   const [mode, setMode] = useState('live');  // 'live' | 'snapshot'
   const [snapping, setSnapping] = useState(false);
   const [status, setStatus] = useState('connecting'); // 'connecting' | 'live' | 'error'
+  const [zoom, setZoom] = useState(1);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const cardRef = useRef(null);
   const prevSrcRef = useRef(null);
+
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, []);
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      cardRef.current?.requestFullscreen();
+    } else {
+      document.exitFullscreen();
+    }
+  };
 
   useEffect(() => {
     if (mode !== 'live' || (!config?.printer_ip && !config?.camera_url)) return;
@@ -127,10 +142,14 @@ export default function LiveFeed({ config }) {
 
   const goLive = () => { setSrc(null); setMode('live'); };
 
+  const cardStyle = isFullscreen
+    ? { background: '#000', display: 'flex', flexDirection: 'column', height: '100vh', padding: 12, boxSizing: 'border-box', borderRadius: 0 }
+    : {};
+
   return (
-    <div className="card">
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-        <span style={{ fontWeight: 700, fontSize: 14 }}>Camera Feed</span>
+    <div className="card" ref={cardRef} style={cardStyle}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexShrink: 0 }}>
+        <span style={{ fontWeight: 700, fontSize: 14, color: isFullscreen ? '#fff' : undefined }}>Camera Feed</span>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           {mode === 'live' && status === 'live' && (
             <span style={{ fontSize: 11, color: 'var(--ok)', fontWeight: 600 }}>● LIVE</span>
@@ -141,23 +160,35 @@ export default function LiveFeed({ config }) {
           {mode === 'live' && status === 'error' && (
             <span style={{ fontSize: 11, color: 'var(--crit)', fontWeight: 600 }}>● reconnecting</span>
           )}
+
+          {/* Zoom controls */}
+          <button className="btn-ghost" style={{ padding: '4px 8px', fontSize: 12 }} onClick={() => setZoom(z => Math.max(1, +(z - 0.25).toFixed(2)))} disabled={zoom <= 1}>−</button>
+          <span style={{ fontSize: 11, minWidth: 28, textAlign: 'center', color: isFullscreen ? '#ccc' : undefined }}>{zoom.toFixed(2)}×</span>
+          <button className="btn-ghost" style={{ padding: '4px 8px', fontSize: 12 }} onClick={() => setZoom(z => Math.min(4, +(z + 0.25).toFixed(2)))}>+</button>
+          {zoom !== 1 && (
+            <button className="btn-ghost" style={{ padding: '4px 8px', fontSize: 11 }} onClick={() => setZoom(1)}>reset</button>
+          )}
+
           <button className="btn-ghost" style={{ padding: '4px 10px', fontSize: 12 }} onClick={goLive} disabled={mode === 'live'}>
             Live
           </button>
           <button className="btn-ghost" style={{ padding: '4px 10px', fontSize: 12 }} onClick={takeSnapshot} disabled={snapping}>
             {snapping ? 'Capturing…' : 'Snapshot'}
           </button>
+          <button className="btn-ghost" style={{ padding: '4px 10px', fontSize: 12 }} onClick={toggleFullscreen} title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}>
+            {isFullscreen ? '⤡' : '⤢'}
+          </button>
         </div>
       </div>
 
-      <div style={{ background: '#000', borderRadius: 6, overflow: 'hidden', aspectRatio: '4/3', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ background: '#000', borderRadius: isFullscreen ? 0 : 6, overflow: 'hidden', aspectRatio: isFullscreen ? undefined : '4/3', flex: isFullscreen ? 1 : undefined, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         {!config?.printer_ip && !config?.camera_url ? (
           <span style={{ color: 'var(--muted)', fontSize: 13 }}>Configure printer IP in Settings</span>
         ) : src ? (
           <img
             src={src}
             alt={mode === 'live' ? 'Live feed' : 'Snapshot'}
-            style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+            style={{ width: '100%', height: '100%', objectFit: 'contain', transform: `scale(${zoom})`, transformOrigin: 'center center' }}
           />
         ) : (
           <span style={{ color: 'var(--muted)', fontSize: 13 }}>
