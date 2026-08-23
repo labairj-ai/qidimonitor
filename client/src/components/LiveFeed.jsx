@@ -6,6 +6,7 @@ const FRAME_TIMEOUT_MS = 4000; // reconnect if no frame in 4s
 
 async function consumeMjpeg(signal, onFrame) {
   const res = await fetch('/api/printer/stream', { signal });
+  if (!res.ok) throw new Error(`Stream ${res.status}`);
   const reader = res.body.getReader();
 
   let buf = new Uint8Array(0);

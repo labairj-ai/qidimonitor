@@ -90,7 +90,18 @@ router.get('/stream', async (req, res) => {
   if (!url) return res.status(400).json({ error: 'Printer IP not configured' });
 
   try {
-    const r = await fetch(url); // no timeout — stream runs until client disconnects or stall detected
+    // Separate connect-phase timeout: abort if printer doesn't send headers within 8s.
+    // Once connected, the stall watchdog below takes over for ongoing data.
+    const connectCtrl = new AbortController();
+    const connectTimeout = setTimeout(() => connectCtrl.abort(), 8000);
+    let r;
+    try {
+      r = await fetch(url, { signal: connectCtrl.signal });
+      clearTimeout(connectTimeout);
+    } catch (e) {
+      clearTimeout(connectTimeout);
+      throw e;
+    }
     if (!r.ok) throw new Error(`Stream ${r.status}`);
     res.set('Content-Type', r.headers.get('content-type') || 'multipart/x-mixed-replace');
     res.set('Cache-Control', 'no-cache');
