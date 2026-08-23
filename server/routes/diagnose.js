@@ -160,8 +160,8 @@ router.post('/diagnose/chat', async (req, res) => {
   if (!messages?.length) return res.status(400).json({ error: 'messages required' });
 
   const config = getConfig();
-  const ollamaUrl = config.ollama_url || 'http://100.73.128.40:11434';
-  const model = config.ollama_model || 'llava:13b';
+  const chatUrl = config.chat_llm_url || 'http://100.73.128.40:8080';
+  const model = config.chat_llm_model || 'mlx-community/Llama-3.3-70B-Instruct-4bit';
 
   const systemLines = [
     'You are a 3D printing expert helping a user understand a print quality issue on their QIDI X-Plus 3 (CoreXY, 0.4mm nozzle).',
@@ -205,7 +205,7 @@ router.post('/diagnose/chat', async (req, res) => {
   }
 
   try {
-    const r = await fetch(`${ollamaUrl}/api/chat`, {
+    const r = await fetch(`${chatUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -213,11 +213,11 @@ router.post('/diagnose/chat', async (req, res) => {
         messages: [{ role: 'system', content: systemLines.join('\n') }, ...messages],
         stream: false,
       }),
-      signal: AbortSignal.timeout(60000),
+      signal: AbortSignal.timeout(120000),
     });
-    if (!r.ok) throw new Error(`Ollama ${r.status}: ${await r.text()}`);
+    if (!r.ok) throw new Error(`Chat LLM ${r.status}: ${await r.text()}`);
     const data = await r.json();
-    const reply = data.message?.content || data.response || '';
+    const reply = data.choices?.[0]?.message?.content || '';
     if (!reply.trim()) throw new Error('Model returned empty response');
     res.json({ reply });
   } catch (e) {

@@ -4,8 +4,10 @@ const FIELDS = [
   { key: 'printer_ip', label: 'Printer IP Address', placeholder: '192.168.4.x', hint: 'Local IP of your QIDI X-Plus 3' },
   { key: 'camera_url', label: 'Camera Snapshot URL (optional override)', placeholder: 'http://192.168.4.x/webcam/?action=snapshot', hint: 'Leave blank to auto-derive from printer IP' },
   { key: 'moonraker_url', label: 'Moonraker API URL (optional override)', placeholder: 'http://192.168.4.x:7125', hint: 'Leave blank to auto-derive from printer IP' },
-  { key: 'ollama_url', label: 'Ollama URL', placeholder: 'http://100.91.228.110:11434', hint: 'Ollama server running a vision-capable model' },
-  { key: 'ollama_model', label: 'Ollama Vision Model', placeholder: 'qwen2.5vl:7b', hint: 'Must be a vision-capable model. Options: qwen2.5vl:7b, qwen2.5vl:32b, llava:13b' },
+  { key: 'ollama_url', label: 'Ollama URL', placeholder: 'http://100.73.128.40:11434', hint: 'Ollama server running a vision-capable model (used for image diagnosis)' },
+  { key: 'ollama_model', label: 'Ollama Vision Model', placeholder: 'llava:13b', hint: 'Must support image inputs. Options: llava:13b, qwen2.5-vl:7b' },
+  { key: 'chat_llm_url', label: 'Chat LLM URL', placeholder: 'http://100.73.128.40:8080', hint: 'OpenAI-compatible server for AI chat follow-up (MLX, Ollama, etc.)' },
+  { key: 'chat_llm_model', label: 'Chat LLM Model', placeholder: 'mlx-community/Llama-3.3-70B-Instruct-4bit', hint: 'Text model for post-diagnosis chat — does not need vision support' },
 ];
 
 export default function Settings({ config, onSave }) {

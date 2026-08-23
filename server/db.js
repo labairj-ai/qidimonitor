@@ -73,6 +73,8 @@ const defaults = {
   moonraker_url: '',
   ollama_url: process.env.OLLAMA_URL || 'http://100.73.128.40:11434',
   ollama_model: 'llava:13b',
+  chat_llm_url: 'http://100.73.128.40:8080',
+  chat_llm_model: 'mlx-community/Llama-3.3-70B-Instruct-4bit',
   auto_enabled: '0',
   auto_interval_min: '10',
 };
