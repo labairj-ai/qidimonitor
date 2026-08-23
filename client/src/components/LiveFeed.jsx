@@ -63,8 +63,12 @@ export default function LiveFeed({ config }) {
   const [snapping, setSnapping] = useState(false);
   const [status, setStatus] = useState('connecting'); // 'connecting' | 'live' | 'error'
   const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [dragging, setDragging] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const cardRef = useRef(null);
+  const viewRef = useRef(null);
+  const dragStart = useRef(null);
   const prevSrcRef = useRef(null);
 
   useEffect(() => {
@@ -72,6 +76,50 @@ export default function LiveFeed({ config }) {
     document.addEventListener('fullscreenchange', onFsChange);
     return () => document.removeEventListener('fullscreenchange', onFsChange);
   }, []);
+
+  // Clamp pan whenever zoom changes
+  useEffect(() => {
+    if (zoom === 1) { setPan({ x: 0, y: 0 }); return; }
+    const el = viewRef.current;
+    if (!el) return;
+    const maxX = (el.clientWidth * (zoom - 1)) / 2;
+    const maxY = (el.clientHeight * (zoom - 1)) / 2;
+    setPan(p => ({
+      x: Math.max(-maxX, Math.min(maxX, p.x)),
+      y: Math.max(-maxY, Math.min(maxY, p.y)),
+    }));
+  }, [zoom]);
+
+  // Window-level drag handlers (so drag tracks outside the container)
+  useEffect(() => {
+    if (!dragging) return;
+    const onMove = (e) => {
+      if (!dragStart.current) return;
+      const dx = e.clientX - dragStart.current.mouseX;
+      const dy = e.clientY - dragStart.current.mouseY;
+      const el = viewRef.current;
+      const maxX = el ? (el.clientWidth * (zoom - 1)) / 2 : Infinity;
+      const maxY = el ? (el.clientHeight * (zoom - 1)) / 2 : Infinity;
+      setPan({
+        x: Math.max(-maxX, Math.min(maxX, dragStart.current.panX + dx)),
+        y: Math.max(-maxY, Math.min(maxY, dragStart.current.panY + dy)),
+      });
+    };
+    const onUp = () => setDragging(false);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [dragging, zoom]);
+
+  const onMouseDown = (e) => {
+    if (zoom <= 1) return;
+    e.preventDefault();
+    setDragging(true);
+    dragStart.current = { mouseX: e.clientX, mouseY: e.clientY, panX: pan.x, panY: pan.y };
+  };
 
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
@@ -166,7 +214,7 @@ export default function LiveFeed({ config }) {
           <span style={{ fontSize: 11, minWidth: 28, textAlign: 'center', color: isFullscreen ? '#ccc' : undefined }}>{zoom.toFixed(2)}×</span>
           <button className="btn-ghost" style={{ padding: '4px 8px', fontSize: 12 }} onClick={() => setZoom(z => Math.min(4, +(z + 0.25).toFixed(2)))}>+</button>
           {zoom !== 1 && (
-            <button className="btn-ghost" style={{ padding: '4px 8px', fontSize: 11 }} onClick={() => setZoom(1)}>reset</button>
+            <button className="btn-ghost" style={{ padding: '4px 8px', fontSize: 11 }} onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}>reset</button>
           )}
 
           <button className="btn-ghost" style={{ padding: '4px 10px', fontSize: 12 }} onClick={goLive} disabled={mode === 'live'}>
@@ -181,14 +229,30 @@ export default function LiveFeed({ config }) {
         </div>
       </div>
 
-      <div style={{ background: '#000', borderRadius: isFullscreen ? 0 : 6, overflow: 'hidden', aspectRatio: isFullscreen ? undefined : '4/3', flex: isFullscreen ? 1 : undefined, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div
+        ref={viewRef}
+        onMouseDown={onMouseDown}
+        style={{
+          background: '#000',
+          borderRadius: isFullscreen ? 0 : 6,
+          overflow: 'hidden',
+          aspectRatio: isFullscreen ? undefined : '4/3',
+          flex: isFullscreen ? 1 : undefined,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          cursor: zoom > 1 ? (dragging ? 'grabbing' : 'grab') : 'default',
+          userSelect: 'none',
+        }}
+      >
         {!config?.printer_ip && !config?.camera_url ? (
           <span style={{ color: 'var(--muted)', fontSize: 13 }}>Configure printer IP in Settings</span>
         ) : src ? (
           <img
             src={src}
             alt={mode === 'live' ? 'Live feed' : 'Snapshot'}
-            style={{ width: '100%', height: '100%', objectFit: 'contain', transform: `scale(${zoom})`, transformOrigin: 'center center' }}
+            draggable={false}
+            style={{ width: '100%', height: '100%', objectFit: 'contain', transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: 'center center' }}
           />
         ) : (
           <span style={{ color: 'var(--muted)', fontSize: 13 }}>
