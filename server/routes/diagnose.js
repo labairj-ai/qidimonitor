@@ -206,6 +206,12 @@ router.post('/diagnose/chat', async (req, res) => {
     systemLines.push('', 'Help the user understand whether the issue was caused by settings, the model/file, material, mechanical factors, or something else. Be specific and practical.');
   }
 
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  const sendEvent = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+
   try {
     const r = await fetch(`${chatUrl}/v1/chat/completions`, {
       method: 'POST',
@@ -213,18 +219,37 @@ router.post('/diagnose/chat', async (req, res) => {
       body: JSON.stringify({
         model,
         messages: [{ role: 'system', content: systemLines.join('\n') }, ...messages],
-        stream: false,
+        stream: true,
         options: { num_ctx: 8192 },
       }),
       signal: AbortSignal.timeout(120000),
     });
-    if (!r.ok) throw new Error(`Chat LLM ${r.status}: ${await r.text()}`);
-    const data = await r.json();
-    const reply = data.choices?.[0]?.message?.content || '';
-    if (!reply.trim()) throw new Error('Model returned empty response');
-    res.json({ reply });
+
+    if (!r.ok) {
+      sendEvent({ error: `Chat LLM ${r.status}: ${await r.text()}` });
+      return res.end();
+    }
+
+    let buf = '';
+    for await (const chunk of r.body) {
+      buf += chunk.toString();
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const payload = line.slice(6).trim();
+        if (payload === '[DONE]') { res.write('data: [DONE]\n\n'); return res.end(); }
+        try {
+          const token = JSON.parse(payload).choices?.[0]?.delta?.content || '';
+          if (token) sendEvent({ token });
+        } catch { /* skip malformed chunk */ }
+      }
+    }
+    res.write('data: [DONE]\n\n');
+    res.end();
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    sendEvent({ error: e.message });
+    res.end();
   }
 });
 

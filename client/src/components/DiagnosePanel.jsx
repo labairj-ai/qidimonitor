@@ -57,7 +57,7 @@ function DiagnosisChat({ result }) {
     setError(null);
     const newMsg = { role: 'user', content: text };
     const updated = [...messages, newMsg];
-    setMessages(updated);
+    setMessages([...updated, { role: 'assistant', content: '' }]);
     setLoading(true);
     try {
       const r = await fetch('/api/diagnose/chat', {
@@ -74,11 +74,39 @@ function DiagnosisChat({ result }) {
           },
         }),
       });
-      const data = await r.json();
-      if (!r.ok) throw new Error(data.error || 'Chat failed');
-      setMessages(prev => [...prev, { role: 'assistant', content: data.reply }]);
+
+      const reader = r.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const payload = line.slice(6).trim();
+          if (payload === '[DONE]') break;
+          try {
+            const obj = JSON.parse(payload);
+            if (obj.error) throw new Error(obj.error);
+            if (obj.token) {
+              setMessages(prev => {
+                const copy = [...prev];
+                copy[copy.length - 1] = { role: 'assistant', content: copy[copy.length - 1].content + obj.token };
+                return copy;
+              });
+            }
+          } catch (parseErr) {
+            if (parseErr.message !== 'Unexpected token') throw parseErr;
+          }
+        }
+      }
     } catch (e) {
       setError(e.message);
+      setMessages(prev => prev.slice(0, -1));
     } finally {
       setLoading(false);
       inputRef.current?.focus();
@@ -120,7 +148,7 @@ function DiagnosisChat({ result }) {
       {messages.length > 0 && (
         <div style={{ maxHeight: 360, overflowY: 'auto', marginBottom: 10, paddingRight: 2 }}>
           {messages.map((m, i) => <ChatBubble key={i} msg={m} />)}
-          {loading && (
+          {loading && messages[messages.length - 1]?.content === '' && (
             <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: 8 }}>
               <div style={{ padding: '8px 14px', borderRadius: '12px 12px 12px 3px', background: 'var(--surface2)', fontSize: 13, color: 'var(--muted)' }}>
                 <span style={{ animation: 'pulse 1s infinite' }}>●</span>
