@@ -77,6 +77,7 @@ async function runDiagnosis({ imageBuffer, imagePath, printFile, autoTriggered, 
     prompt: userText,
     images: [base64],
     stream: false,
+    options: { num_ctx: 8192 },
   };
 
   const r = await fetch(`${ollamaUrl}/api/generate`, {
