@@ -81,14 +81,17 @@ export default function PrintStatus({ config, onPrinterFound }) {
   const [controlling, setControlling] = useState(null);
   const [speedPct, setSpeedPct] = useState(100);
   const [flowPct, setFlowPct] = useState(100);
+  const [fanPct, setFanPct] = useState(100);
   const [pendingSpeed, setPendingSpeed] = useState(false);
   const [pendingFlow, setPendingFlow] = useState(false);
+  const [pendingFan, setPendingFan] = useState(false);
 
   // Sync sliders when fresh context arrives
   useEffect(() => {
     if (ctx?.speed_factor_pct != null) setSpeedPct(ctx.speed_factor_pct);
     if (ctx?.flow_pct != null) setFlowPct(ctx.flow_pct);
-  }, [ctx?.speed_factor_pct, ctx?.flow_pct]);
+    if (ctx?.fan_pct != null) setFanPct(ctx.fan_pct);
+  }, [ctx?.speed_factor_pct, ctx?.flow_pct, ctx?.fan_pct]);
 
   const sendGcode = async (script, setPending) => {
     setPending(true);
@@ -194,9 +197,8 @@ export default function PrintStatus({ config, onPrinterFound }) {
             </div>
           )}
 
-          {ctx?.fan_pct != null && (
+          {(ctx?.speed_factor_pct != null || ctx?.flow_pct != null || ctx?.z_mm != null) && (
             <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8, display: 'flex', gap: 16 }}>
-              <span>Fan {ctx.fan_pct}%</span>
               {ctx.speed_factor_pct != null && ctx.speed_factor_pct !== 100 && <span>Speed {ctx.speed_factor_pct}%</span>}
               {ctx.flow_pct != null && ctx.flow_pct !== 100 && <span>Flow {ctx.flow_pct}%</span>}
               {ctx.z_mm != null && <span>Z {ctx.z_mm}mm</span>}
@@ -230,9 +232,33 @@ export default function PrintStatus({ config, onPrinterFound }) {
             </div>
           )}
 
-          {/* Speed + flow override controls */}
+          {/* Speed, flow, fan controls */}
           {state === 'printing' && (
             <div style={{ marginBottom: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {/* Fan */}
+              {ctx?.fan_pct != null && (
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}>
+                    <span style={{ color: 'var(--muted)' }}>Part cooling fan</span>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <span style={{ fontWeight: 700, color: fanPct === 0 ? 'var(--crit)' : fanPct !== 100 ? 'var(--warn)' : 'var(--text)', fontFamily: 'monospace' }}>{fanPct}%</span>
+                      <button
+                        onClick={() => { setFanPct(100); sendGcode('M106 S255', setPendingFan); }}
+                        disabled={fanPct === 100 || pendingFan}
+                        style={{ fontSize: 10, color: 'var(--muted)', background: 'none', border: '1px solid var(--border)', borderRadius: 3, padding: '1px 6px', cursor: fanPct !== 100 ? 'pointer' : 'default' }}
+                      >
+                        Reset
+                      </button>
+                    </div>
+                  </div>
+                  <input type="range" min="0" max="100" step="5" value={fanPct}
+                    onChange={e => setFanPct(Number(e.target.value))}
+                    onMouseUp={() => sendGcode(`M106 S${Math.round(fanPct / 100 * 255)}`, setPendingFan)}
+                    onTouchEnd={() => sendGcode(`M106 S${Math.round(fanPct / 100 * 255)}`, setPendingFan)}
+                    style={{ width: '100%', accentColor: fanPct === 0 ? 'var(--crit)' : fanPct !== 100 ? 'var(--warn)' : 'var(--accent)' }}
+                  />
+                </div>
+              )}
               {/* Speed */}
               <div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 3 }}>

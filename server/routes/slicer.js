@@ -123,6 +123,7 @@ async function doSlice(stlBuffer, originalName, body) {
     bottomShells = '3',
     ironing = 'no ironing',
     seamPosition = 'aligned',
+    fanSpeed = '100',
   } = body;
 
   const filamentJson = FILAMENTS[material];
@@ -134,7 +135,7 @@ async function doSlice(stlBuffer, originalName, body) {
     material, quality, supports, supportBuildPlateOnly: supportBuildPlateOnly === '1',
     brim, brimWidth: Number(brimWidth), infillDensity: Number(infillDensity), infillPattern,
     wallLoops: Number(wallLoops), topShells: Number(topShells), bottomShells: Number(bottomShells),
-    ironing, seamPosition,
+    fanSpeed: Number(fanSpeed), ironing, seamPosition,
   };
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qidi-slice-'));
@@ -160,6 +161,8 @@ async function doSlice(stlBuffer, originalName, body) {
     bottom_shell_layers: String(bottomShells),
     ironing_type: ironing,
     seam_position: seamPosition,
+    fan_max_speed: String(fanSpeed),
+    fan_min_speed: String(fanSpeed),
   };
 
   if (supports === 'none') {

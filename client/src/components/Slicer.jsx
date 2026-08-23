@@ -116,6 +116,9 @@ export default function Slicer({ onFileUploaded, preloadJob }) {
   const [topShells, setTopShells] = useState(3);
   const [bottomShells, setBottomShells] = useState(3);
 
+  // Cooling
+  const [fanSpeed, setFanSpeed] = useState(100);
+
   // Surface & travel
   const [ironing, setIroning] = useState('no ironing');
   const [seamPosition, setSeamPosition] = useState('aligned');
@@ -158,6 +161,7 @@ export default function Slicer({ onFileUploaded, preloadJob }) {
     if (s.wallLoops != null) setWallLoops(s.wallLoops);
     if (s.topShells != null) setTopShells(s.topShells);
     if (s.bottomShells != null) setBottomShells(s.bottomShells);
+    if (s.fanSpeed != null) setFanSpeed(s.fanSpeed);
     if (s.ironing) setIroning(s.ironing);
     if (s.seamPosition) setSeamPosition(s.seamPosition);
     setResult(null);
@@ -195,6 +199,7 @@ export default function Slicer({ onFileUploaded, preloadJob }) {
     form.append('wallLoops', String(wallLoops));
     form.append('topShells', String(topShells));
     form.append('bottomShells', String(bottomShells));
+    form.append('fanSpeed', String(fanSpeed));
     form.append('ironing', ironing);
     form.append('seamPosition', seamPosition);
     return form;
@@ -339,6 +344,17 @@ export default function Slicer({ onFileUploaded, preloadJob }) {
             <select value={quality} onChange={e => setQuality(e.target.value)} style={selectStyle} disabled={busy}>
               {options.qualities.map(q => <option key={q}>{q}</option>)}
             </select>
+          </div>
+
+          {/* Fan speed */}
+          <div style={{ gridColumn: '1 / -1' }}>
+            <Label>Part cooling fan — {fanSpeed}%</Label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <input type="range" min="0" max="100" step="5"
+                value={fanSpeed} onChange={e => setFanSpeed(Number(e.target.value))}
+                disabled={busy} style={{ flex: 1, accentColor: fanSpeed === 0 ? 'var(--crit)' : 'var(--accent)' }} />
+              <span style={{ fontSize: 12, color: 'var(--muted)', minWidth: 36, textAlign: 'right' }}>{fanSpeed}%</span>
+            </div>
           </div>
 
           {/* Supports */}
@@ -495,7 +511,7 @@ export default function Slicer({ onFileUploaded, preloadJob }) {
             <div><span style={{ color: 'var(--muted)' }}>Material: </span>{result.material} · {result.quality}</div>
             <div><span style={{ color: 'var(--muted)' }}>Infill: </span>{result.infillDensity}% {result.infillPattern}</div>
             <div><span style={{ color: 'var(--muted)' }}>Walls: </span>{result.wallLoops} loops · Top {result.topShells} · Bottom {result.bottomShells}</div>
-            <div><span style={{ color: 'var(--muted)' }}>Seam: </span>{result.seamPosition}{result.ironing !== 'no ironing' ? ` · Ironing: ${result.ironing}` : ''}</div>
+            <div><span style={{ color: 'var(--muted)' }}>Fan: </span>{result.fanSpeed}% · Seam: {result.seamPosition}{result.ironing !== 'no ironing' ? ` · Ironing: ${result.ironing}` : ''}</div>
             {result.supports !== 'none' && <div><span style={{ color: 'var(--muted)' }}>Supports: </span>{result.supports}{result.supportBuildPlateOnly ? ' (build plate only)' : ''}</div>}
             {result.brim !== 'no_brim' && <div><span style={{ color: 'var(--muted)' }}>Brim: </span>{result.brim} {result.brimWidth}mm</div>}
           </div>
