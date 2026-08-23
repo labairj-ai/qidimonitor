@@ -29,10 +29,22 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(CLIENT_DIST, 'index.html'));
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`qidimonitor running on port ${PORT}`);
-  startAutoMonitor();
-});
+function listen(retries = 5) {
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`qidimonitor running on port ${PORT}`);
+    startAutoMonitor();
+  });
+  server.on('error', (e) => {
+    if (e.code === 'EADDRINUSE' && retries > 0) {
+      console.log(`Port ${PORT} in use, retrying in 2s (${retries} attempts left)…`);
+      setTimeout(() => listen(retries - 1), 2000);
+    } else {
+      console.error('Failed to bind port:', e.message);
+      process.exit(1);
+    }
+  });
+}
+listen();
 
 // --- Auto-monitor loop ---
 let lastAutoDiagTime = 0;

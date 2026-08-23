@@ -5,6 +5,9 @@ module.exports = {
     cwd: '/Users/ai_lab/Desktop/qidimonitor/server',
     interpreter: 'node',
     interpreter_args: '--experimental-sqlite',
+    kill_timeout: 5000,
+    wait_ready: false,
+    listen_timeout: 8000,
     env: {
       NODE_ENV: 'production',
       PORT: '4200',
