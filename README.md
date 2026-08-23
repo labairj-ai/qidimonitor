@@ -4,7 +4,7 @@ AI-powered 3D print monitor and slicer dashboard for the QIDI X-Plus 3. Streams 
 
 ## Features
 
-- **Live camera feed** — MJPEG stream via client-side parser (28fps, no freezing)
+- **Live camera feed** — MJPEG stream via client-side parser (28fps, no freezing); zoom in up to 4× with +/− buttons, drag to pan when zoomed, fullscreen toggle (⤢)
 - **Print status** — real-time temps, progress bar with time remaining, elapsed time, filament used, live speed/flow override sliders
 - **Speed & flow control** — M220 (print speed 25–200%) and M221 (flow rate 50–150%) sliders applied live mid-print via Moonraker gcode endpoint; independent controls, values sync from printer each poll
 - **AI diagnosis** — Ollama vision model (`llava:13b`) analyzes snapshots for stringing, warping, under-extrusion, spaghetti, etc.; each issue includes what was observed + a specific fix; runs manually or on a timer
@@ -139,7 +139,7 @@ server/
 client/src/
   App.jsx             — tab layout (Monitor / Files / History / Settings)
   components/
-    LiveFeed.jsx      — MJPEG stream parser, reconnect, watchdog
+    LiveFeed.jsx      — MJPEG stream parser, reconnect, watchdog; zoom (1–4×) with drag-to-pan and fullscreen
     PrintStatus.jsx   — temps, progress + time remaining, speed/flow sliders, print controls
     DiagnosePanel.jsx — diagnosis trigger, issue cards with description + fix, AI chat thread
     AutoMonitor.jsx   — auto-diagnosis toggle + interval
