@@ -78,12 +78,15 @@ export async function getPrinterContext(config) {
       printer_config: printerCfg,
     };
 
-    // Time remaining: prefer slicer estimate adjusted by progress; fall back to elapsed-based projection
+    // Time remaining: prefer slicer estimate adjusted by progress; fall back to elapsed-based projection.
+    // Adjust for speed factor override — the slicer estimate assumes 100% speed.
     const progress = status.display_status?.progress;
     const elapsed = ctx.print_duration_sec;
+    const speedRatio = (ctx.speed_factor_pct ?? 100) / 100;
     if (progress != null && progress > 0.01 && elapsed != null) {
       if (ctx.estimated_total_sec) {
-        ctx.time_remaining_sec = Math.max(0, Math.round(ctx.estimated_total_sec * (1 - progress)));
+        const rawRemaining = ctx.estimated_total_sec * (1 - progress);
+        ctx.time_remaining_sec = Math.max(0, Math.round(rawRemaining / speedRatio));
       } else {
         ctx.time_remaining_sec = Math.max(0, Math.round((elapsed / progress) - elapsed));
       }
