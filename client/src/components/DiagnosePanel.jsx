@@ -1,3 +1,4 @@
+import { usePrinterApi } from '../printerApi.jsx';
 import React, { useState, useRef, useEffect } from 'react';
 
 const SEVERITY_COLORS = { ok: 'var(--ok)', warning: 'var(--warn)', critical: 'var(--crit)' };
@@ -39,6 +40,7 @@ function ChatBubble({ msg }) {
 }
 
 function DiagnosisChat({ result }) {
+  const { apiFetch } = usePrinterApi();
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -60,7 +62,7 @@ function DiagnosisChat({ result }) {
     setMessages([...updated, { role: 'assistant', content: '' }]);
     setLoading(true);
     try {
-      const r = await fetch('/api/diagnose/chat', {
+      const r = await apiFetch('/api/diagnose/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -200,6 +202,7 @@ function DiagnosisChat({ result }) {
 }
 
 export default function DiagnosePanel({ config, onResult, latestResult }) {
+  const { apiFetch } = usePrinterApi();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
@@ -211,7 +214,7 @@ export default function DiagnosePanel({ config, onResult, latestResult }) {
     try {
       const fd = new FormData();
       if (file) fd.append('image', file);
-      const r = await fetch('/api/diagnose', { method: 'POST', body: fd });
+      const r = await apiFetch('/api/diagnose', { method: 'POST', body: fd });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || 'Diagnosis failed');
       onResult(data);

@@ -3,6 +3,7 @@ import multer from 'multer';
 import fetch from 'node-fetch';
 import fs from 'fs';
 import path from 'path';
+import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
 import { getConfig, insertDiagnosis, getHistory } from '../db.js';
 import { getPrinterContext, formatContextForPrompt } from '../printerContext.js';
@@ -15,7 +16,7 @@ fs.mkdirSync(SNAPSHOTS_DIR, { recursive: true });
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 const router = Router();
 
-const SYSTEM_PROMPT = `You are a 3D printing quality expert specializing in FDM printers like the QIDI X-Plus 3 (CoreXY, 0.4mm nozzle). Analyze the provided image of a 3D print and any accompanying printer context data to identify quality issues.
+const SYSTEM_PROMPT = `You are a 3D printing quality expert specializing in FDM printers. Use the supplied printer identity and toolhead data; do not assume a machine or nozzle size. Analyze the provided image of a 3D print and any accompanying printer context data to identify quality issues.
 
 When printer context is provided, use it to inform your diagnosis:
 - Compare actual temperatures to targets — deviations often explain quality problems
@@ -73,7 +74,7 @@ async function runDiagnosis({ imageBuffer, imagePath, printFile, autoTriggered, 
 
   const body = {
     model,
-    system: SYSTEM_PROMPT,
+    system: SYSTEM_PROMPT + `\nPrinter: ${config.name} (${config.model}).`,
     prompt: userText,
     images: [base64],
     stream: false,
@@ -105,6 +106,7 @@ async function runDiagnosis({ imageBuffer, imagePath, printFile, autoTriggered, 
   }
 
   const record = {
+    printer_id: config.id,
     timestamp: new Date().toISOString(),
     image_path: imagePath || null,
     print_file: printFile || ctx?.filename || null,
@@ -122,24 +124,24 @@ async function runDiagnosis({ imageBuffer, imagePath, printFile, autoTriggered, 
 
 // POST /api/diagnose — accepts multipart file OR triggers live snapshot
 router.post('/diagnose', upload.single('image'), async (req, res) => {
-  const config = getConfig();
+  const config = getConfig(req.printerId);
   let imageBuffer;
   let imagePath = null;
 
   if (req.file) {
     imageBuffer = req.file.buffer;
-    const fname = `manual_${Date.now()}.jpg`;
+    const fname = `${config.id}_manual_${randomUUID()}.jpg`;
     imagePath = path.join(SNAPSHOTS_DIR, fname);
     fs.writeFileSync(imagePath, imageBuffer);
   } else {
-    const snapshotUrl = config.camera_url || (config.printer_ip ? `http://${config.printer_ip}/webcam/?action=snapshot` : null);
+    const snapshotUrl = config.camera_url || (config.model === 'qidi' && config.printer_ip ? `http://${config.printer_ip}/webcam/?action=snapshot` : null);
     if (!snapshotUrl) return res.status(400).json({ error: 'No image uploaded and no printer camera configured' });
 
     try {
       const r = await fetch(snapshotUrl, { signal: AbortSignal.timeout(8000) });
       if (!r.ok) throw new Error(`Camera ${r.status}`);
       imageBuffer = Buffer.from(await r.arrayBuffer());
-      const fname = `snap_${Date.now()}.jpg`;
+      const fname = `${config.id}_snap_${randomUUID()}.jpg`;
       imagePath = path.join(SNAPSHOTS_DIR, fname);
       fs.writeFileSync(imagePath, imageBuffer);
     } catch (e) {
@@ -160,13 +162,13 @@ router.post('/diagnose/chat', async (req, res) => {
   const { messages, context } = req.body;
   if (!messages?.length) return res.status(400).json({ error: 'messages required' });
 
-  const config = getConfig();
+  const config = getConfig(req.printerId);
   const ollamaBase = config.ollama_url || 'http://100.73.128.40:11434';
   const chatUrl = config.chat_llm_url || ollamaBase;
   const model = config.chat_llm_model || config.ollama_model || 'qwen2.5-vl:7b';
 
   const systemLines = [
-    'You are a 3D printing expert helping a user understand a print quality issue on their QIDI X-Plus 3 (CoreXY, 0.4mm nozzle).',
+    `You are a 3D printing expert helping with ${config.name} (${config.model}). Use actual reported toolhead and nozzle details.`,
     'A vision AI just ran a diagnosis on their print. Answer questions about it conversationally and practically.',
     '',
   ];
@@ -261,7 +263,7 @@ router.post('/diagnose/chat', async (req, res) => {
 // GET /api/history
 router.get('/history', (req, res) => {
   const limit = Math.min(parseInt(req.query.limit) || 50, 200);
-  res.json(getHistory(limit));
+  res.json(getHistory(limit, req.printerId));
 });
 
 export { runDiagnosis };

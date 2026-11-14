@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import fetch from 'node-fetch';
+import fetch, { FormData, Blob } from 'node-fetch';
 import multer from 'multer';
 import { getConfig } from '../db.js';
 
@@ -12,7 +12,7 @@ function base(config) {
 
 // GET /api/files — list gcode files with metadata
 router.get('/', async (req, res) => {
-  const config = getConfig();
+  const config = getConfig(req.printerId);
   const b = base(config);
   if (!b) return res.status(400).json({ error: 'Printer not configured' });
 
@@ -49,7 +49,7 @@ router.get('/', async (req, res) => {
 
 // POST /api/files/upload — upload gcode to printer
 router.post('/upload', upload.single('file'), async (req, res) => {
-  const config = getConfig();
+  const config = getConfig(req.printerId);
   const b = base(config);
   if (!b) return res.status(400).json({ error: 'Printer not configured' });
   if (!req.file) return res.status(400).json({ error: 'No file provided' });
@@ -73,7 +73,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
 
 // DELETE /api/files — delete a gcode file
 router.delete('/', async (req, res) => {
-  const config = getConfig();
+  const config = getConfig(req.printerId);
   const b = base(config);
   const { filename } = req.body;
   if (!b) return res.status(400).json({ error: 'Printer not configured' });
@@ -93,7 +93,7 @@ router.delete('/', async (req, res) => {
 
 // POST /api/print/start
 router.post('/print/start', async (req, res) => {
-  const config = getConfig();
+  const config = getConfig(req.printerId);
   const b = base(config);
   const { filename } = req.body;
   if (!b) return res.status(400).json({ error: 'Printer not configured' });
@@ -116,7 +116,7 @@ router.post('/print/start', async (req, res) => {
 // POST /api/print/pause|resume|cancel
 for (const action of ['pause', 'resume', 'cancel']) {
   router.post(`/print/${action}`, async (req, res) => {
-    const config = getConfig();
+    const config = getConfig(req.printerId);
     const b = base(config);
     if (!b) return res.status(400).json({ error: 'Printer not configured' });
     try {

@@ -1,3 +1,4 @@
+import { usePrinterApi } from '../printerApi.jsx';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 
 function fmtSize(bytes) {
@@ -27,7 +28,8 @@ function MetaBadge({ children, color }) {
   );
 }
 
-export default function FileManager({ refreshKey, onReslice }) {
+export default function FileManager({ refreshKey, onReslice, printerName }) {
+  const { apiFetch, apiUrl } = usePrinterApi();
   const [files, setFiles] = useState([]);
   const [slicerJobs, setSlicerJobs] = useState({}); // gcode_name → job
   const [loading, setLoading] = useState(true);
@@ -45,8 +47,8 @@ export default function FileManager({ refreshKey, onReslice }) {
   const loadFiles = useCallback(async () => {
     try {
       const [filesRes, jobsRes] = await Promise.all([
-        fetch('/api/files'),
-        fetch('/api/slicer/jobs'),
+        apiFetch('/api/files'),
+        apiFetch('/api/slicer/jobs'),
       ]);
       if (!filesRes.ok) throw new Error(await filesRes.text());
       setFiles(await filesRes.json());
@@ -105,15 +107,15 @@ export default function FileManager({ refreshKey, onReslice }) {
       alert('Upload failed: network error');
     };
 
-    xhr.open('POST', '/api/files/upload');
+    xhr.open('POST', apiUrl('/api/files/upload'));
     xhr.send(form);
   };
 
   const startPrint = async (filename) => {
-    if (!confirm(`Start printing "${filename}"?`)) return;
+    if (!confirm(`Start printing "${filename}" on ${printerName || 'this printer'}?`)) return;
     setStarting(filename);
     try {
-      const r = await fetch('/api/files/print/start', {
+      const r = await apiFetch('/api/files/print/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filename }),
@@ -127,10 +129,10 @@ export default function FileManager({ refreshKey, onReslice }) {
   };
 
   const deleteFile = async (filename) => {
-    if (!confirm(`Delete "${filename}"?`)) return;
+    if (!confirm(`Delete "${filename}" from ${printerName || 'this printer'}?`)) return;
     setDeleting(filename);
     try {
-      const r = await fetch('/api/files', {
+      const r = await apiFetch('/api/files', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filename }),

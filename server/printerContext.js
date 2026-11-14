@@ -6,9 +6,13 @@ export async function getPrinterContext(config) {
   if (!base) return null;
 
   try {
+    const listRes = await fetch(`${base}/printer/objects/list`, { signal: AbortSignal.timeout(5000) });
+    if (!listRes.ok) return null;
+    const objects = (await listRes.json()).result?.objects || [];
+    const wanted = objects.filter(n => /^(print_stats|display_status|toolhead|gcode_move|extruder\d*|heater_bed|heater_generic hot|output_pin fan0|fan|filament_switch_sensor fila|motion_report)$/.test(n));
     const [objRes, cfgRes] = await Promise.all([
       fetch(
-        `${base}/printer/objects/query?print_stats&display_status&toolhead&gcode_move&extruder&heater_bed&heater_generic+hot&output_pin+fan0&filament_switch_sensor+fila&motion_report`,
+        `${base}/printer/objects/query?${wanted.map(encodeURIComponent).join("&")}`,
         { signal: AbortSignal.timeout(5000) }
       ),
       fetch(`${base}/printer/objects/query?configfile`, { signal: AbortSignal.timeout(5000) }),
@@ -17,13 +21,14 @@ export async function getPrinterContext(config) {
     if (!objRes.ok) return null;
     const status = (await objRes.json()).result?.status || {};
 
+    const activeExtruder = status.toolhead?.extruder || 'extruder';
     let printerCfg = null;
     if (cfgRes.ok) {
       const cfg = (await cfgRes.json()).result?.status?.configfile?.config || {};
       printerCfg = {
-        nozzle_diameter: cfg.extruder?.nozzle_diameter,
-        filament_diameter: cfg.extruder?.filament_diameter,
-        pressure_advance: cfg.extruder?.pressure_advance,
+        nozzle_diameter: cfg[activeExtruder]?.nozzle_diameter,
+        filament_diameter: cfg[activeExtruder]?.filament_diameter,
+        pressure_advance: cfg[activeExtruder]?.pressure_advance,
         max_velocity: cfg.printer?.max_velocity,
         max_accel: cfg.printer?.max_accel,
         kinematics: cfg.printer?.kinematics,
@@ -48,7 +53,10 @@ export async function getPrinterContext(config) {
     const chamber = status['heater_generic hot'];
     const filSensor = status['filament_switch_sensor fila'];
 
+    const toolheads = objects.filter(n => /^extruder\d*$/.test(n)).map(name => ({ name, active: name === activeExtruder, temperature: status[name]?.temperature, target: status[name]?.target }));
+    if (status[activeExtruder]) status.extruder = status[activeExtruder];
     const ctx = {
+      printer_name: config.name, model: config.model, toolheads, active_extruder: activeExtruder,
       print_state: status.print_stats?.state,
       filename,
       progress_pct: status.display_status?.progress != null ? Math.round(status.display_status.progress * 100) : null,
@@ -94,7 +102,7 @@ export async function getPrinterContext(config) {
       ctx.time_remaining_sec = null;
     }
 
-    ctx.material_profile = lookupMaterial(ctx.filament_type);
+    ctx.material_profile = config.model === 'qidi' ? lookupMaterial(ctx.filament_type) : null;
     ctx.deviations = checkDeviations(ctx, ctx.material_profile);
 
     return ctx;
@@ -105,7 +113,8 @@ export async function getPrinterContext(config) {
 
 export function formatContextForPrompt(ctx) {
   if (!ctx) return '';
-  const lines = ['--- Printer Context ---'];
+  const lines = ['--- Printer Context ---', `Printer: ${ctx.printer_name} (${ctx.model})`];
+  for (const t of ctx.toolheads || []) lines.push(`Tool ${t.name}${t.active ? ' (active)' : ''}: ${t.temperature ?? 'unknown'}°C, target ${t.target ?? 'unknown'}°C`);
 
   if (ctx.print_state) lines.push(`State: ${ctx.print_state}`);
   if (ctx.filename) lines.push(`File: ${ctx.filename}`);

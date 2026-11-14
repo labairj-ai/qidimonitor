@@ -1,13 +1,15 @@
+import { usePrinterApi } from '../printerApi.jsx';
 import React, { useState, useEffect } from 'react';
 
 export default function AutoMonitor({ config, onConfigChange }) {
+  const { apiFetch } = usePrinterApi();
   const [saving, setSaving] = useState(false);
   const enabled = config?.auto_enabled === '1';
   const interval = parseInt(config?.auto_interval_min) || 10;
 
   const toggle = async () => {
     setSaving(true);
-    await fetch('/api/config', {
+    await apiFetch('/api/config', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ auto_enabled: enabled ? '0' : '1' }),
@@ -17,7 +19,7 @@ export default function AutoMonitor({ config, onConfigChange }) {
   };
 
   const setInterval_ = async (val) => {
-    await fetch('/api/config', {
+    await apiFetch('/api/config', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ auto_interval_min: String(val) }),

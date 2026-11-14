@@ -1,3 +1,4 @@
+import { usePrinterApi } from '../printerApi.jsx';
 import React, { useState, useEffect, useRef } from 'react';
 import STLViewer from './STLViewer.jsx';
 
@@ -95,6 +96,7 @@ const numStyle = {
 };
 
 export default function Slicer({ onFileUploaded, preloadJob }) {
+  const { apiFetch, apiUrl } = usePrinterApi();
   const [options, setOptions] = useState(null);
 
   // Core settings
@@ -139,7 +141,7 @@ export default function Slicer({ onFileUploaded, preloadJob }) {
   const viewerRef = useRef();
 
   useEffect(() => {
-    fetch('/api/slicer/options').then(r => r.json()).then(d => {
+    apiFetch('/api/slicer/options').then(r => r.json()).then(d => {
       setOptions(d);
       setMaterial(d.defaults.material);
       setQuality(d.defaults.quality);
@@ -227,7 +229,7 @@ export default function Slicer({ onFileUploaded, preloadJob }) {
       resolve();
     };
     xhr.onerror = () => { setSlicing(false); setUploading(false); setError('Network error'); resolve(); };
-    xhr.open(method, url);
+    xhr.open(method, apiUrl(url));
     xhr.send(body);
   });
 

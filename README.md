@@ -1,6 +1,6 @@
 # qidimonitor
 
-AI-powered 3D print monitor and slicer dashboard for the QIDI X-Plus 3. Streams live camera feed, runs AI print quality diagnosis via Ollama, slices STL files with OrcaSlicer, and manages G-code files on the printer — all from a single web UI.
+AI-powered multi-printer dashboard for the QIDI X-Plus 3 and Snapmaker U1. Streams live camera feed, runs AI print quality diagnosis via Ollama, slices STL files with OrcaSlicer, and manages G-code files on the printer — all from a single web UI.
 
 ## Features
 
@@ -14,8 +14,10 @@ AI-powered 3D print monitor and slicer dashboard for the QIDI X-Plus 3. Streams 
 - **STL slicer** — drag-and-drop STL → OrcaSlicer CLI → G-code uploaded directly to printer; 3D WebGL model preview with X/Y/Z rotation controls (rotation baked into STL before slicing)
 - **Re-slice** — sliced STLs are stored server-side; G-code files with a stored STL show a "Re-slice" button that reopens the slicer pre-filled with original settings
 - **File manager** — list, upload, and delete G-code files on the printer; start/pause/resume/cancel prints
-- **Auto-discovery** — TCP-scans the subnet for Moonraker when the printer's DHCP IP changes
-- **Diagnosis history** — saved snapshots, printer context, and AI findings per run; collapsed cards show which issues triggered each warning
+- **Explicit connections** — configure each printer separately; network failures never silently reassign another Moonraker device
+- **Two-printer overview** — independent camera, status, and automatic diagnosis for both printers; printer-specific Monitor / Files / Settings pages
+- **U1 setup** — saved connection check, camera discovery, four-toolhead telemetry, and controls disabled until configured
+- **Saved diagnoses** — retained per printer; History navigation has been removed
 
 ## Stack
 
@@ -67,7 +69,7 @@ Set the printer IP in the Settings tab (default `192.168.4.41`). The app derives
 
 Override any URL in Settings if your camera is on a non-standard path.
 
-**Auto-discovery:** when the printer becomes unreachable, the app TCP-scans the local subnet on port 7125 and updates the IP automatically. A "Find Printer" button in the Monitor tab triggers this manually.
+**Connection checks:** each printer has its own saved address. Use Settings → Test saved connection to check its hostname and camera endpoints. Automatic address reassignment is disabled to prevent selecting the other printer.
 
 ### Camera
 
@@ -152,3 +154,19 @@ client/src/
     History.jsx       — diagnosis history; collapsed cards show triggered issues; expanded shows description + fix
     Settings.jsx      — printer IP, camera URL, Ollama config
 ```
+
+
+## Snapmaker U1 arrival setup
+
+1. Open **Snapmaker U1 → Settings** and save its local IP/hostname (or an explicit Moonraker API URL).
+2. Click **Test saved connection**. Verify the reported hostname belongs to the U1. This check only reads printer information.
+3. Use a reported camera with **Use this camera**, then save. If the firmware does not report cameras, enter its HTTP snapshot and MJPEG stream URLs manually. Other camera transports require a compatible stream endpoint.
+4. Check Monitor for camera, temperatures, progress, and toolheads. Enable automatic diagnosis independently for each printer if wanted.
+5. After verifying identity, optionally enable U1 uploads and print controls and save.
+6. Slice with Snapmaker Orca using U1 profiles and upload the resulting G-code under that printer's Files page. Built-in slicing remains QIDI-only until verified U1 toolhead/machine profiles are available.
+
+Existing settings and records migrate transactionally to `qidi`; `u1` starts without printer/camera addresses and with monitoring/controls disabled. The database is backed up before the initial deployment. History data is retained, although its UI tab is removed.
+
+New API routes use `/api/printers/:printerId/...` with stable `qidi` and `u1` IDs. The legacy `/api/...` routes target QIDI only. Unknown printer IDs return 404 rather than falling back. There is no global active-printer state on the server.
+
+Validation: `npm test` (isolated SQLite and HTTP printer fixtures), `npm run build`.

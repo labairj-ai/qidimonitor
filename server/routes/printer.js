@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import fetch from 'node-fetch';
 import { getConfig } from '../db.js';
-import { discoverPrinter, isDiscovering } from '../discovery.js';
 import { getPrinterContext } from '../printerContext.js';
 
 const router = Router();
@@ -14,44 +13,28 @@ function moonrakerUrl(config) {
 
 function cameraSnapshotUrl(config) {
   if (config.camera_url) return config.camera_url;
-  if (config.printer_ip) return `http://${config.printer_ip}/webcam/?action=snapshot`;
+  if (config.model === 'qidi' && config.printer_ip) return `http://${config.printer_ip}/webcam/?action=snapshot`;
   return null;
 }
 
 function cameraStreamUrl(config) {
-  if (config.printer_ip) return `http://${config.printer_ip}/webcam/?action=stream`;
+  if (config.camera_stream_url) return config.camera_stream_url;
+  if (config.model === 'qidi' && config.printer_ip) return `http://${config.printer_ip}/webcam/?action=stream`;
   return null;
 }
 
-// Try a fetch; on network failure, auto-discover and retry once
-async function fetchWithRediscover(urlFn, fetchFn) {
-  const config = getConfig();
-  let url = urlFn(config);
+// A failed connection never reassigns this printer to another network device.
+async function fetchForPrinter(req, urlFn, fetchFn) {
+  const config = getConfig(req.printerId);
+  const url = urlFn(config);
   if (!url) return { error: 'not_configured' };
-
-  try {
-    return await fetchFn(url, config);
-  } catch (e) {
-    if (!isDiscovering() && config.printer_ip) {
-      const newIp = await discoverPrinter(config.printer_ip);
-      if (newIp) {
-        const newConfig = getConfig();
-        const newUrl = urlFn(newConfig);
-        try {
-          return await fetchFn(newUrl, newConfig);
-        } catch (e2) {
-          throw e2;
-        }
-      }
-    }
-    throw e;
-  }
+  return fetchFn(url, config);
 }
 
 // GET /api/printer/status
 router.get('/status', async (req, res) => {
   try {
-    const result = await fetchWithRediscover(
+    const result = await fetchForPrinter(req,
       cfg => moonrakerUrl(cfg) && `${moonrakerUrl(cfg)}/printer/objects/query?print_stats&extruder&heater_bed&display_status`,
       async (url) => {
         const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
@@ -68,7 +51,7 @@ router.get('/status', async (req, res) => {
 
 // GET /api/printer/snapshot — returns raw image bytes
 router.get('/snapshot', async (req, res) => {
-  const config = getConfig();
+  const config = getConfig(req.printerId);
   const url = cameraSnapshotUrl(config);
   if (!url) return res.status(400).json({ error: 'Printer IP not configured' });
 
@@ -85,7 +68,7 @@ router.get('/snapshot', async (req, res) => {
 
 // GET /api/printer/stream — proxy MJPEG stream
 router.get('/stream', async (req, res) => {
-  const config = getConfig();
+  const config = getConfig(req.printerId);
   const url = cameraStreamUrl(config);
   if (!url) return res.status(400).json({ error: 'Printer IP not configured' });
 
@@ -136,26 +119,13 @@ router.get('/stream', async (req, res) => {
 
 // POST /api/printer/discover — manual discovery trigger
 router.post('/discover', async (req, res) => {
-  if (isDiscovering()) {
-    return res.json({ status: 'in_progress' });
-  }
-  const config = getConfig();
-  const ip = await discoverPrinter(config.printer_ip);
-  if (ip) {
-    res.json({ status: 'found', ip });
-  } else {
-    res.status(404).json({ status: 'not_found' });
-  }
+  res.status(409).json({ error: 'Automatic reassignment is disabled for multiple printers. Set this printer’s address in Settings and test its connection.' });
 });
-
-// GET /api/printer/discover — check if discovery is running
-router.get('/discover', (req, res) => {
-  res.json({ discovering: isDiscovering(), printer_ip: getConfig().printer_ip });
-});
+router.get('/discover', (req, res) => res.json({ discovering: false, printer_ip: getConfig(req.printerId).printer_ip }));
 
 // GET /api/printer/context — full printer context with material profile + deviations
 router.get('/context', async (req, res) => {
-  const config = getConfig();
+  const config = getConfig(req.printerId);
   const ctx = await getPrinterContext(config);
   if (!ctx) return res.status(503).json({ error: 'Printer unreachable' });
   res.json(ctx);
@@ -165,7 +135,7 @@ router.get('/context', async (req, res) => {
 router.post('/gcode', async (req, res) => {
   const { script } = req.body;
   if (!script) return res.status(400).json({ error: 'script required' });
-  const config = getConfig();
+  const config = getConfig(req.printerId);
   const base = moonrakerUrl(config);
   if (!base) return res.status(400).json({ error: 'Printer not configured' });
   try {

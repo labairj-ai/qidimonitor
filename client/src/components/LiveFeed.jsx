@@ -1,9 +1,10 @@
+import { usePrinterApi } from '../printerApi.jsx';
 import React, { useState, useEffect, useRef } from 'react';
 
 const FRAME_TIMEOUT_MS = 4000; // reconnect if no frame in 4s
 
-async function consumeMjpeg(signal, onFrame) {
-  const res = await fetch('/api/printer/stream', { signal });
+async function consumeMjpeg(apiFetch, signal, onFrame) {
+  const res = await apiFetch('/api/printer/stream', { signal });
   if (!res.ok) throw new Error(`Stream ${res.status}`);
   const reader = res.body.getReader();
 
@@ -58,6 +59,7 @@ async function consumeMjpeg(signal, onFrame) {
 }
 
 export default function LiveFeed({ config }) {
+  const { apiFetch } = usePrinterApi();
   const [src, setSrc] = useState(null);
   const [mode, setMode] = useState('live');  // 'live' | 'snapshot'
   const [snapping, setSnapping] = useState(false);
@@ -130,7 +132,7 @@ export default function LiveFeed({ config }) {
   };
 
   useEffect(() => {
-    if (mode !== 'live' || (!config?.printer_ip && !config?.camera_url)) return;
+    if (mode !== 'live' || (!config?.camera_stream_url && !(config?.model === 'qidi' && config?.printer_ip))) return;
 
     setStatus('connecting');
     const controller = new AbortController();
@@ -139,7 +141,7 @@ export default function LiveFeed({ config }) {
 
     const connect = async () => {
       try {
-        await consumeMjpeg(controller.signal, (jpegBytes) => {
+        await consumeMjpeg(apiFetch, controller.signal, (jpegBytes) => {
           const blob = new Blob([jpegBytes], { type: 'image/jpeg' });
           const url = URL.createObjectURL(blob);
           setSrc(prev => {
@@ -168,7 +170,7 @@ export default function LiveFeed({ config }) {
       controller.abort();
       clearTimeout(retryTimer);
     };
-  }, [mode, config?.printer_ip, config?.camera_url]);
+  }, [mode, config?.printer_ip, config?.camera_url, config?.camera_stream_url, apiFetch]);
 
   // Clean up blob URL on unmount
   useEffect(() => () => { if (src) URL.revokeObjectURL(src); }, []);
@@ -176,7 +178,7 @@ export default function LiveFeed({ config }) {
   const takeSnapshot = async () => {
     setSnapping(true);
     try {
-      const r = await fetch('/api/printer/snapshot');
+      const r = await apiFetch('/api/printer/snapshot');
       if (!r.ok) throw new Error(await r.text());
       const blob = await r.blob();
       setSrc(prev => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(blob); });
@@ -245,8 +247,8 @@ export default function LiveFeed({ config }) {
           userSelect: 'none',
         }}
       >
-        {!config?.printer_ip && !config?.camera_url ? (
-          <span style={{ color: 'var(--muted)', fontSize: 13 }}>Configure printer IP in Settings</span>
+        {!src && !config?.camera_stream_url && !(config?.model === 'qidi' && config?.printer_ip) ? (
+          <span style={{ color: 'var(--muted)', fontSize: 13 }}>Configure this printer’s camera in Settings</span>
         ) : src ? (
           <img
             src={src}
