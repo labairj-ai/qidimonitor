@@ -1,3 +1,4 @@
+import NozzleControl from './NozzleControl.jsx';
 import { usePrinterApi } from '../printerApi.jsx';
 import React, { useState, useEffect, useCallback } from 'react';
 
@@ -240,6 +241,8 @@ export default function PrintStatus({ config, onPrinterFound }) {
               )}
             </div>
           )}
+
+          {config?.model === 'qidi' && ctx && ['printing','paused'].includes(state) && <NozzleControl config={config} ctx={ctx} onApplied={poll}/>}
 
           {/* Speed, flow, fan controls */}
           {canControl && state === 'printing' && (

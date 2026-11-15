@@ -110,6 +110,14 @@ Runtime files, excluded from Git:
 
 The transactional migration assigns old records to `qidi` and creates an unconfigured `u1`. Migration is repeatable and preserves existing QIDI setting values. The November 14 migration preserved 42 diagnoses and two slicing jobs; database integrity passed.
 
+## Manual nozzle temperature
+
+During an active or paused QIDI print, open **Monitor → Print status → Nozzle temperature**, enter a whole-number target in °C, and click **Apply temperature**. This control also appears in the all-printers overview. Actual temperature and current target are displayed separately; typing does not send a command. No diagnosis or AI approval is needed.
+
+Manual targets allow 180–300°C, narrowed by the printer's reported minimum/maximum heater and minimum extrusion temperatures (with a 5°C margin). The detected material baseline is shown as a reference; manual entry can follow the filament manufacturer's settings rather than the narrower AI-fix range. Missing heater limits disable the control. Idle preheating and heater-off actions are not supported by this control.
+
+`POST /api/printers/qidi/printer/nozzle` accepts `target`, `expected_target`, `extruder`, and `filename`. Before sending a single named-extruder command, it checks the current print, toolhead, target, and hardware limits. Target confirmation tolerates slow command acknowledgments; it does not wait for actual temperature to settle or retry an uncertain command. Simulated-printer tests cover invalid/stale targets, printer isolation, printing, paused prints, and stopped-print rejection. The manual control is QIDI-only for now.
+
 ## Reviewed diagnosis fixes
 
 Open **QIDI → Monitor → AI Diagnosis** and run **Diagnose Now**. Eligible new diagnoses show **Review a suggested adjustment**, with the setting at diagnosis, proposed value with % or °C units, reason, and **Apply fix** button. Nothing changes automatically. After applying, live readings confirm the result and the manual controls refresh. **Recent adjustments** preserves the log and **Undo** across page reloads and newer diagnoses. Automatic monitoring results appear in the diagnosis panel within fifteen seconds, but still require an explicit Apply click.

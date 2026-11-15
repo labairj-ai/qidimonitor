@@ -161,6 +161,22 @@ test('nozzle Apply and Undo verify targets without waiting for actual temperatur
   assert.equal(scripts[count+1],'SET_HEATER_TEMPERATURE HEATER=extruder TARGET=250');
 });
 
+test('manual nozzle entry rejects stale/invalid targets and applies while printing or paused',async()=>{
+  const count=scripts.length;
+  const opts=(target,extra={})=>({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target,expected_target:nozzleTarget,extruder:'extruder',filename,...extra})});
+  for(const target of [0,999,'240',240.5]) assert.equal((await json('/api/printers/qidi/printer/nozzle',opts(target))).status,400);
+  assert.equal((await json('/api/printers/qidi/printer/nozzle',opts(240,{expected_target:200}))).status,409);
+  assert.equal((await json('/api/printers/qidi/printer/nozzle',opts(240,{filename:'other.gcode'}))).status,409);
+  assert.equal((await json('/api/printers/u1/printer/nozzle',opts(240))).status,409);
+  assert.equal(scripts.length,count);
+  const applied=await json('/api/printers/qidi/printer/nozzle',opts(240));assert.equal(applied.status,200);assert.equal(applied.data.observed,240);assert.equal(nozzleTarget,240);
+  printState='paused';
+  const paused=await json('/api/printers/qidi/printer/nozzle',opts(245));assert.equal(paused.status,200);assert.equal(nozzleTarget,245);
+  printState='complete';
+  assert.equal((await json('/api/printers/qidi/printer/nozzle',opts(250))).status,409);
+  assert.deepEqual(scripts.slice(count),['SET_HEATER_TEMPERATURE HEATER=extruder TARGET=240','SET_HEATER_TEMPERATURE HEATER=extruder TARGET=245']);
+});
+
 test.after(async()=>{
   child?.kill();await new Promise(r=>fake.close(r));store.default.close();rmSync(dir,{recursive:true,force:true});
 });

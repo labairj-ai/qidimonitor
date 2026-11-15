@@ -72,7 +72,7 @@ export function validateFixContext(fix, ctx, { undo = false, now = Date.now(), a
 
 export function fixCommand(control, value, heater) {
   if (!Number.isFinite(value)) throw new Error('Invalid control value');
-  if (control === 'nozzle' && Number.isFinite(value) && value >= 180 && value <= 280 && /^extruder\d*$/.test(heater)) return `SET_HEATER_TEMPERATURE HEATER=${heater} TARGET=${value}`;
+  if (control === 'nozzle' && Number.isFinite(value) && value >= 180 && value <= 300 && /^extruder\d*$/.test(heater)) return `SET_HEATER_TEMPERATURE HEATER=${heater} TARGET=${value}`;
   if (control === 'speed' && value >= 50 && value <= 200) return `M220 S${value}`;
   if (control === 'flow' && value >= 95 && value <= 105) return `M221 S${value}`;
   if (control === 'fan' && value >= 0 && value <= 100) return `M106 S${Math.round(value * 255 / 100)}`;
@@ -113,7 +113,7 @@ export async function executeFix({ fix, undo, config, request, context, wait = m
       await wait(500);
       const actual = await context(config);
       if (!actual) continue;
-      if (actual.filename !== fix.baseline.filename || actual.print_state !== 'printing' || actual.active_extruder !== fix.baseline.active_extruder || !Number.isFinite(actual.print_duration_sec) || actual.print_duration_sec < fix.baseline.print_duration_sec) break;
+      if (actual.filename !== fix.baseline.filename || actual.print_state !== fix.baseline.print_state || actual.active_extruder !== fix.baseline.active_extruder || !Number.isFinite(actual.print_duration_sec) || actual.print_duration_sec < fix.baseline.print_duration_sec) break;
       const value = actual[CONTROL_FIELDS[fix.control]];
       if (Number.isFinite(value) && Math.abs(value - desired) <= 0.5) return { confirmed: true, observed: value };
       if (commandError && !['AbortError','TimeoutError'].includes(commandError.name)) throw commandError;

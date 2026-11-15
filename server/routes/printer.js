@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import fetch from 'node-fetch';
 import { getConfig } from '../db.js';
+import { executeFix, readFixState } from '../diagnosisFixes.js';
 import { getPrinterContext } from '../printerContext.js';
 
 const router = Router();
@@ -194,6 +195,32 @@ router.get('/context', async (req, res) => {
   const ctx = await getPrinterContext(config);
   if (!ctx) return res.status(503).json({ error: 'Printer unreachable' });
   res.json(ctx);
+});
+
+// Manual target entry is independent of AI diagnosis eligibility.
+const nozzleBusy = new Set();
+router.post('/nozzle', async (req, res) => {
+  const config = getConfig(req.printerId);
+  if (config.model !== 'qidi') return res.status(409).json({ error: 'Manual nozzle controls are currently available for the QIDI only.' });
+  const { target, expected_target, extruder, filename } = req.body;
+  if (!Number.isInteger(target) || !Number.isFinite(expected_target) || typeof filename !== 'string' || !/^extruder\d*$/.test(extruder)) return res.status(400).json({ error: 'Enter a whole-number temperature and refresh the printer readings.' });
+  if (nozzleBusy.has(req.printerId)) return res.status(409).json({ error: 'A nozzle change is already in progress.' });
+  nozzleBusy.add(req.printerId);
+  try {
+    const ctx = await getPrinterContext(config);
+    if (!ctx || !['printing','paused'].includes(ctx.print_state)) return res.status(409).json({ error: 'Nozzle target changes require an active or paused print.' });
+    if (ctx.active_extruder !== extruder || ctx.filename !== filename || ctx.nozzle_target !== expected_target) return res.status(409).json({ error: 'The printer or nozzle target changed. Review the current readings and apply again.' });
+    const cfg = ctx.printer_config;
+    if (!Number.isFinite(cfg?.nozzle_min_temp) || !Number.isFinite(cfg?.nozzle_max_temp) || !Number.isFinite(cfg?.min_extrude_temp)) return res.status(409).json({ error: 'Nozzle heater limits are unavailable.' });
+    const min = Math.max(180, cfg.nozzle_min_temp + 5, cfg.min_extrude_temp + 5);
+    const max = Math.min(300, cfg.nozzle_max_temp - 5);
+    if (target < min || target > max) return res.status(400).json({ error: `Choose a nozzle target between ${min} and ${max}°C.` });
+    if (target === ctx.nozzle_target) return res.json({ confirmed:true, observed:target });
+    const result = await executeFix({ fix: { control:'nozzle', before:ctx.nozzle_target, after:target, baseline:ctx },
+      undo:false, config, request:fetch, context:cfg => readFixState(cfg,fetch,'nozzle',extruder) });
+    res.status(result.confirmed ? 200 : 202).json(result);
+  } catch(e) { res.status(503).json({ error: `Nozzle change could not be confirmed: ${e.message}. Check the live target before trying again.` }); }
+  finally { nozzleBusy.delete(req.printerId); }
 });
 
 // POST /api/printer/gcode — run a raw gcode command (M220, M221, etc.)
