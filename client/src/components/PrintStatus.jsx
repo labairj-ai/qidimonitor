@@ -96,9 +96,12 @@ export default function PrintStatus({ config, onPrinterFound }) {
   // Sync sliders when fresh context arrives
   useEffect(() => {
     if (ctx?.speed_factor_pct != null) setSpeedPct(ctx.speed_factor_pct);
-    if (ctx?.flow_pct != null) setFlowPct(ctx.flow_pct);
     if (ctx?.fan_pct != null) setFanPct(ctx.fan_pct);
-  }, [ctx?.speed_factor_pct, ctx?.flow_pct, ctx?.fan_pct]);
+  }, [ctx?.speed_factor_pct, ctx?.fan_pct]);
+
+  useEffect(() => {
+    if (ctx?.flow_pct != null) setFlowPct(ctx.flow_pct);
+  }, [ctx?.flow_pct]);
 
   const sendGcode = async (script, setPending) => {
     setPending(true);
@@ -310,12 +313,22 @@ export default function PrintStatus({ config, onPrinterFound }) {
                     </button>
                   </div>
                 </div>
-                <input type="range" min="50" max="150" step="5" value={flowPct}
-                  onChange={e => setFlowPct(Number(e.target.value))}
-                  onMouseUp={() => sendGcode(`M221 S${flowPct}`, setPendingFlow)}
-                  onTouchEnd={() => sendGcode(`M221 S${flowPct}`, setPendingFlow)}
-                  style={{ width: '100%', accentColor: flowPct !== 100 ? 'var(--warn)' : 'var(--accent)' }}
-                />
+                <div role="group" aria-label="Flow rate adjustment" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <button type="button" className="btn-ghost" aria-label="Decrease flow by 1 percent"
+                    disabled={pendingFlow || Number(flowPct) <= 50}
+                    onClick={() => setFlowPct(Math.max(50, (Number(flowPct) || 100) - 1))}>−</button>
+                  <input type="number" min="50" max="150" step="1" aria-label="Flow rate percent" value={flowPct}
+                    disabled={pendingFlow} onChange={e => setFlowPct(e.target.value === '' ? '' : Number(e.target.value))}
+                    style={{ width: 90, textAlign: 'center' }}/>
+                  <span>%</span>
+                  <button type="button" className="btn-ghost" aria-label="Increase flow by 1 percent"
+                    disabled={pendingFlow || Number(flowPct) >= 150}
+                    onClick={() => setFlowPct(Math.min(150, (Number(flowPct) || 100) + 1))}>+</button>
+                  <button type="button" className="btn-primary"
+                    disabled={pendingFlow || !Number.isInteger(flowPct) || flowPct < 50 || flowPct > 150 || flowPct === ctx?.flow_pct}
+                    onClick={() => sendGcode(`M221 S${flowPct}`, setPendingFlow)}>{pendingFlow ? 'Applying…' : 'Apply flow'}</button>
+                </div>
+                <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 5 }}>Current: {ctx?.flow_pct ?? '—'}%. Adjust in 1% steps, then click Apply flow.</p>
               </div>
             </div>
           )}

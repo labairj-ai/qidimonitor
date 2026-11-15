@@ -122,6 +122,10 @@ Disabling prevents new analyses. A camera fetch that has not reached analysis is
 
 `GET /api/printers/:printerId/monitor` returns live state and the latest saved automatic result; `POST /api/printers/:printerId/monitor/check` starts a nonblocking check. Enable and interval settings remain in the printer-scoped config API. Runtime progress and scheduling reset on service restart; saved enable/interval settings and diagnosis history persist.
 
+## Manual flow rate
+
+In Print status during a print, use the **− / +** stepper or number field to adjust flow in **1 percentage-point steps**, then click **Apply flow**. The manual range remains 50–150%. Editing the selected value does not send commands; the current reported flow is shown below it. **Reset** retains its existing behavior of applying 100%. This makes 1–2% AI-recommended adjustments easy to enter precisely.
+
 ## Manual nozzle temperature
 
 During an active or paused QIDI print, open **Monitor → Print status → Nozzle temperature**, enter a whole-number target in °C, and click **Apply temperature**. This control also appears in the all-printers overview. Actual temperature and current target are displayed separately; typing does not send a command. No diagnosis or AI approval is needed.
