@@ -27,6 +27,9 @@ export async function getPrinterContext(config) {
       const cfg = (await cfgRes.json()).result?.status?.configfile?.config || {};
       printerCfg = {
         nozzle_diameter: cfg[activeExtruder]?.nozzle_diameter,
+        nozzle_min_temp: cfg[activeExtruder]?.min_temp != null ? Number(cfg[activeExtruder].min_temp) : null,
+        nozzle_max_temp: cfg[activeExtruder]?.max_temp != null ? Number(cfg[activeExtruder].max_temp) : null,
+        min_extrude_temp: cfg[activeExtruder]?.min_extrude_temp != null ? Number(cfg[activeExtruder].min_extrude_temp) : 170,
         filament_diameter: cfg[activeExtruder]?.filament_diameter,
         pressure_advance: cfg[activeExtruder]?.pressure_advance,
         max_velocity: cfg.printer?.max_velocity,
@@ -149,6 +152,7 @@ export function formatContextForPrompt(ctx) {
     const pc = ctx.printer_config;
     lines.push('');
     lines.push('Printer config:');
+    if (pc.nozzle_min_temp != null && pc.nozzle_max_temp != null) lines.push(`  Nozzle heater limits: ${pc.nozzle_min_temp}–${pc.nozzle_max_temp}°C; minimum extrusion temperature ${pc.min_extrude_temp}°C`);
     if (pc.nozzle_diameter) lines.push(`  Nozzle: ${pc.nozzle_diameter}mm`);
     if (pc.max_velocity) lines.push(`  Max velocity: ${pc.max_velocity}mm/s`);
     if (pc.max_accel) lines.push(`  Max accel: ${pc.max_accel}mm/s²`);

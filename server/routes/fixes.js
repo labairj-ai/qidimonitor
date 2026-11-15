@@ -34,7 +34,7 @@ router.post('/fixes/:fixId/:action', async (req,res) => {
     const context = await getPrinterContext(config);
     validateFixContext(fix,context,{ undo: action === 'undo', appliedAt: fix.applied_at });
     claimFix(fix,action); claimed = true;
-    const result = await executeFix({ fix, undo: action === 'undo', config, request: fetch, context: cfg => readFixState(cfg,fetch,fix.control) });
+    const result = await executeFix({ fix, undo: action === 'undo', config, request: fetch, context: cfg => readFixState(cfg,fetch,fix.control,fix.baseline.active_extruder) });
     finishFix(fix,action,result);
     res.status(result.confirmed ? 200 : 202).json({ ...result, fix: getFix(fixId,req.printerId) });
   } catch (e) {

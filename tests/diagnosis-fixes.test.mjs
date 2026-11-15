@@ -29,6 +29,22 @@ test('proposals require reliable live data and bounded structured recommendation
   assert.throws(()=>fixCommand('heater',250));
 });
 
+test('nozzle fixes respect material, direction, heater limits and settled telemetry',()=>{
+  const ctx={...baseline(),filament_type:'PETG',nozzle_target:250,nozzle_temp:250.2,printer_config:{nozzle_min_temp:0,nozzle_max_temp:300,min_extrude_temp:170}};
+  const p=parsed('nozzle',240,'stringing');
+  const fix=buildFixes(p,ctx,options())[0];assert.ok(fix);assert.equal(fix.before,250);assert.equal(fix.after,240);
+  for(const c of [{...ctx,filament_type:null},{...ctx,nozzle_temp:null},{...ctx,nozzle_temp:230},{...ctx,active_extruder:'extruder;M112'},{...ctx,printer_config:{}},{...ctx,printer_config:{...ctx.printer_config,nozzle_max_temp:242}}]) assert.deepEqual(buildFixes(p,c,options()),[]);
+  for(const value of [0,230,249,260,'240']) assert.deepEqual(buildFixes(parsed('nozzle',value,'stringing'),ctx,options()),[]);
+  assert.equal(buildFixes(parsed('nozzle',240,'under_extrusion'),ctx,options()).length,0);
+  assert.equal(buildFixes(parsed('nozzle',240,'under_extrusion'),{...ctx,nozzle_target:235,nozzle_temp:235},options()).length,1);
+  assert.throws(()=>validateFixContext(fix,{...ctx,nozzle_target:245}));
+  assert.throws(()=>validateFixContext(fix,{...ctx,nozzle_temp:230}));
+  assert.doesNotThrow(()=>validateFixContext(fix,{...ctx,nozzle_target:240,nozzle_temp:240},{undo:true,appliedAt:Date.now()}));
+  assert.throws(()=>fixCommand('nozzle',240,'heater_bed'));
+  assert.throws(()=>fixCommand('nozzle',240,'extruder\nM112'));
+  assert.throws(()=>fixCommand('nozzle',0,'extruder'));
+});
+
 test('freshness, print identity and changed controls are rechecked before apply and undo',()=>{
   const now=Date.now(); const fix=buildFixes(parsed(),baseline(),{...options(),now})[0];
   assert.doesNotThrow(()=>validateFixContext(fix,baseline(),{now}));
@@ -45,21 +61,23 @@ process.env.STLS_DIR=path.join(dir,'stls');
 const store=await import('../server/db.js');
 const fixStore=await import('../server/fixStore.js');
 let speed=100, flow=100, fan=60, filename='part.gcode', printState='printing', recommendation=parsed();
+let nozzleTarget=205, nozzleActual=205, material='PLA';
 const scripts=[];
 let commandMode='normal';
 const fake=http.createServer(async(req,res)=>{
   res.setHeader('Content-Type','application/json');
-  const status={ print_stats:{state:printState,filename,print_duration:100,total_duration:100},toolhead:{extruder:'extruder'},gcode_move:{speed_factor:speed/100,extrude_factor:flow/100},extruder:{temperature:205,target:205},heater_bed:{temperature:60,target:60},'output_pin fan0':{value:fan/100},motion_report:{live_position:[0,0,2]},configfile:{config:{extruder:{nozzle_diameter:0.4}}}};
+  const status={ print_stats:{state:printState,filename,print_duration:100,total_duration:100},toolhead:{extruder:'extruder'},gcode_move:{speed_factor:speed/100,extrude_factor:flow/100},extruder:{temperature:nozzleActual,target:nozzleTarget},heater_bed:{temperature:60,target:60},'output_pin fan0':{value:fan/100},motion_report:{live_position:[0,0,2]},configfile:{config:{extruder:{nozzle_diameter:0.4,min_temp:0,max_temp:300,min_extrude_temp:170}}}};
   if(req.url==='/api/generate') { for await(const _ of req) {} return res.end(JSON.stringify({response:JSON.stringify(recommendation)})); }
   if(req.url==='/snapshot') { res.setHeader('Content-Type','image/jpeg'); return res.end(Buffer.from([255,216,255,217])); }
   if(req.url==='/printer/objects/list') return res.end(JSON.stringify({result:{objects:Object.keys(status)}}));
   if(req.url.startsWith('/printer/objects/query')) return res.end(JSON.stringify({result:{status}}));
-  if(req.url.startsWith('/server/files/metadata')) return res.end(JSON.stringify({result:{filament_type:'PLA',first_layer_height:0.2}}));
+  if(req.url.startsWith('/server/files/metadata')) return res.end(JSON.stringify({result:{filament_type:material,first_layer_height:0.2}}));
   if(req.url==='/printer/gcode/script') {
     let body='';for await(const chunk of req) body+=chunk;
     const script=JSON.parse(body).script; scripts.push(script);
     if(commandMode==='reject') { res.statusCode=500; return res.end('{}'); }
     setTimeout(()=>{
+      if(script.startsWith('SET_HEATER_TEMPERATURE HEATER=extruder TARGET=')) nozzleTarget=Number(script.split('TARGET=')[1]);
       if(script.startsWith('M220 S')) speed=Number(script.slice(6));
       if(script.startsWith('M221 S')) flow=Number(script.slice(6));
       if(script.startsWith('M106 S')) fan=Math.round(Number(script.slice(6))*100/255);
@@ -126,6 +144,21 @@ test('uncertain changes cannot be replayed and acknowledgement sends no command'
   assert.equal((await json(`/api/printers/qidi/diagnose/fixes/${fix.id}/apply`,post)).status,409);assert.equal(scripts.length,count+1);
   assert.equal((await json(`/api/printers/qidi/diagnose/fixes/${fix.id}/dismiss`,post)).status,200);assert.equal(scripts.length,count+1);
   assert.equal((await json(`/api/printers/qidi/diagnose/fixes/${fix.id}/undo`,post)).status,409);
+});
+
+test('nozzle Apply and Undo verify targets without waiting for actual temperature to catch up',async()=>{
+  store.default.prepare('DELETE FROM diagnosis_fix_events').run();
+  commandMode='normal';material='PETG';nozzleTarget=250;nozzleActual=250.2;
+  recommendation=parsed('nozzle',240,'stringing');
+  const d=await diagnose();assert.equal(d.fixes.length,1);const fix=d.fixes[0];const count=scripts.length;
+  const result=await json(`/api/printers/qidi/diagnose/fixes/${fix.id}/apply`,post);
+  assert.equal(result.status,200);assert.equal(result.data.observed,240);assert.equal(nozzleTarget,240);assert.equal(nozzleActual,250.2);
+  assert.equal(scripts[count],'SET_HEATER_TEMPERATURE HEATER=extruder TARGET=240');
+  nozzleTarget=245;
+  assert.equal((await json(`/api/printers/qidi/diagnose/fixes/${fix.id}/undo`,post)).status,409);assert.equal(scripts.length,count+1);
+  nozzleTarget=240;
+  const undo=await json(`/api/printers/qidi/diagnose/fixes/${fix.id}/undo`,post);assert.equal(undo.status,200);assert.equal(nozzleTarget,250);
+  assert.equal(scripts[count+1],'SET_HEATER_TEMPERATURE HEATER=extruder TARGET=250');
 });
 
 test.after(async()=>{

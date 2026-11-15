@@ -54,7 +54,8 @@ Only for an actual live QIDI print with reliable context, you may suggest ONE sm
 - speed: percentage override, only reduce current by 5 to 10 percentage points, final 50 to 100; for ghosting or under_extrusion only. Do not reduce speed to treat over-extrusion or oozing.
 - flow: percentage override, only change by 1 to 2 percentage points within 95 to 105; increase for under_extrusion, decrease for over_extrusion. Requires known PLA/PETG/ABS/ASA/TPU material.
 - fan: only increase part-cooling by at most 10 percentage points for stringing/blob_zit after the first two layer heights. Final ranges PLA 50-100, PETG 20-50, ABS/ASA/TPU 0-20. Requires known material and layer/Z context.
-Do not propose changes for severe or critical issues, spaghetti, warping, bed adhesion failure, or layer delamination. Those need user inspection. Do not propose temperature, retraction, motion, calibration, heater, or power commands. Never invent missing readings. If uncertain, use [] and give textual advice only. A suggestion is an experiment to review, not a guaranteed fix.`;
+Do not propose changes for severe or critical issues, spaghetti, warping, bed adhesion failure, or layer delamination. Those need user inspection. - nozzle: nozzle TARGET in degrees Celsius, not the measured temperature. Change by at most 10 C per fix, only with known PLA/PETG/ABS/ASA/TPU and a settled nozzle (actual within 5 C of its current target). Decrease for stringing, blob_zit, or over_extrusion; increase only for under_extrusion. Final ranges: PLA 200-210 C, PETG 230-245 C, ABS/ASA 235-255 C, TPU 210-225 C, also respecting reported hardware limits. Never turn the heater off. If recommending a nozzle adjustment in the advice and these bounds permit it, include a matching nozzle control_suggestion so it can be reviewed and applied.
+Do not propose retraction, motion, calibration, bed/chamber temperature, other heater, or power commands. Never invent missing readings. If uncertain, use [] and give textual advice only. A suggestion is an experiment to review, not a guaranteed fix.`;
 
 const DIAGNOSIS_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -70,7 +71,7 @@ const DIAGNOSIS_SCHEMA = {
       } } },
     control_suggestions: { type: 'array', maxItems: 1, items: { type: 'object', additionalProperties: false,
       required: ['control','value','issue_category','reason'], properties: {
-        control: { type: 'string', enum: ['speed','flow','fan'] }, value: { type: 'integer' },
+        control: { type: 'string', enum: ['speed','flow','fan','nozzle'] }, value: { type: 'integer' },
         issue_category: { type: 'string', enum: ['stringing','under_extrusion','over_extrusion','ghosting','blob_zit'] }, reason: { type: 'string' },
       } } },
   },
