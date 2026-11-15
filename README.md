@@ -26,7 +26,7 @@ pm2 logs qidimonitor
 ## Features
 
 - **All-printers overview:** independent camera, print status, and automatic diagnosis controls for each configured printer; setup card for the U1 before it arrives.
-- **Live camera:** proxied HTTP MJPEG stream, snapshot capture, zoom/pan, fullscreen, reconnect handling, and stream watchdogs.
+- **Live camera:** proxied HTTP MJPEG stream, snapshot capture, zoom/pan, fullscreen, reconnect handling, and stream watchdogs. Tap + above 1×, then drag with one finger on mobile (or a mouse/pen on desktop) to pan. At 1× the page scrolls normally; Reset restores the full view. Camera buttons wrap on narrow screens and use larger touch targets. Viewer panning does not change the full image used for AI diagnosis.
 - **Print status:** temperatures, progress, filename, elapsed/remaining time, filament use, and available printer context. U1 context supports multiple extruders and identifies the active toolhead.
 - **Controls:** printer-specific start, pause, resume, cancel, speed, flow, and available fan controls. U1 uploads and controls start disabled and can be enabled in its Settings after checking the printer's identity.
 - **AI diagnosis:** manual image upload or camera snapshot, optional scheduled diagnosis while printing, and follow-up chat. Prompts use the selected printer's identity/context; QIDI material guidance is not applied to the U1.

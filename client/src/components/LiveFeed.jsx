@@ -92,35 +92,31 @@ export default function LiveFeed({ config }) {
     }));
   }, [zoom]);
 
-  // Window-level drag handlers (so drag tracks outside the container)
-  useEffect(() => {
-    if (!dragging) return;
-    const onMove = (e) => {
-      if (!dragStart.current) return;
-      const dx = e.clientX - dragStart.current.mouseX;
-      const dy = e.clientY - dragStart.current.mouseY;
-      const el = viewRef.current;
-      const maxX = el ? (el.clientWidth * (zoom - 1)) / 2 : Infinity;
-      const maxY = el ? (el.clientHeight * (zoom - 1)) / 2 : Infinity;
-      setPan({
-        x: Math.max(-maxX, Math.min(maxX, dragStart.current.panX + dx)),
-        y: Math.max(-maxY, Math.min(maxY, dragStart.current.panY + dy)),
-      });
-    };
-    const onUp = () => setDragging(false);
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
-    return () => {
-      window.removeEventListener('mousemove', onMove);
-      window.removeEventListener('mouseup', onUp);
-    };
-  }, [dragging, zoom]);
-
-  const onMouseDown = (e) => {
-    if (zoom <= 1) return;
+  // Pointer capture keeps mouse, pen, and touch drags attached to the view.
+  const stopDrag = (e) => {
+    if (dragStart.current?.pointerId !== e.pointerId) return;
+    dragStart.current = null;
+    setDragging(false);
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+  };
+  const onPointerDown = (e) => {
+    if (zoom <= 1 || !e.isPrimary || (e.pointerType === 'mouse' && e.button !== 0)) return;
     e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragStart.current = { pointerId:e.pointerId, x:e.clientX, y:e.clientY, panX:pan.x, panY:pan.y };
     setDragging(true);
-    dragStart.current = { mouseX: e.clientX, mouseY: e.clientY, panX: pan.x, panY: pan.y };
+  };
+  const onPointerMove = (e) => {
+    const start = dragStart.current;
+    if (!start || start.pointerId !== e.pointerId || zoom <= 1) return;
+    const el = viewRef.current;
+    if (!el) return;
+    const maxX = el.clientWidth * (zoom - 1) / 2;
+    const maxY = el.clientHeight * (zoom - 1) / 2;
+    setPan({
+      x:Math.max(-maxX,Math.min(maxX,start.panX + e.clientX - start.x)),
+      y:Math.max(-maxY,Math.min(maxY,start.panY + e.clientY - start.y)),
+    });
   };
 
   const toggleFullscreen = () => {
@@ -198,9 +194,9 @@ export default function LiveFeed({ config }) {
 
   return (
     <div className="card" ref={cardRef} style={cardStyle}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexShrink: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexShrink: 0, flexWrap: 'wrap', gap: 8 }}>
         <span style={{ fontWeight: 700, fontSize: 14, color: isFullscreen ? '#fff' : undefined }}>Camera Feed</span>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <div className="camera-controls" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', maxWidth: '100%' }}>
           {mode === 'live' && status === 'live' && (
             <span style={{ fontSize: 11, color: 'var(--ok)', fontWeight: 600 }}>● LIVE</span>
           )}
@@ -233,7 +229,11 @@ export default function LiveFeed({ config }) {
 
       <div
         ref={viewRef}
-        onMouseDown={onMouseDown}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={stopDrag}
+        onPointerCancel={stopDrag}
+        onLostPointerCapture={stopDrag}
         style={{
           background: '#000',
           borderRadius: isFullscreen ? 0 : 6,
@@ -245,6 +245,7 @@ export default function LiveFeed({ config }) {
           justifyContent: 'center',
           cursor: zoom > 1 ? (dragging ? 'grabbing' : 'grab') : 'default',
           userSelect: 'none',
+          touchAction: zoom > 1 ? 'none' : 'pan-y pinch-zoom',
         }}
       >
         {!src && !config?.camera_stream_url && !(config?.model === 'qidi' && config?.printer_ip) ? (
@@ -262,6 +263,9 @@ export default function LiveFeed({ config }) {
           </span>
         )}
       </div>
+      <p style={{ fontSize: 12, color: isFullscreen ? '#ccc' : 'var(--muted)', marginTop: 8, flexShrink: 0 }}>
+        {zoom > 1 ? 'Drag the image to pan — use one finger on mobile. Reset returns to the full view.' : 'Tap + to zoom, then drag the image to pan. On mobile, use one finger.'}
+      </p>
     </div>
   );
 }

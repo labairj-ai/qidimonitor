@@ -98,3 +98,7 @@ h1 { font-size: 24px; letter-spacing: -.03em; margin-top: 3px; }
 .tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
 .connection-result { margin-top: 16px; padding: 14px; background: var(--surface2); border-radius: 8px; overflow-wrap: anywhere; font-size: 13px; }
 @media(max-width: 760px) { .fleet-grid,.detail-grid { grid-template-columns: minmax(0,1fr); } .app-header { padding: 16px; } .app-main { padding: 20px 14px; } h1 { font-size: 20px; } .header-subtitle,.header-dot { display: none; } .card-heading { flex-wrap: wrap; } }
+
+@media (pointer: coarse) {
+  .camera-controls button { min-height: 44px; min-width: 44px; }
+}
