@@ -60,7 +60,11 @@ The existing QIDI settings are retained during migration. The current configured
 
 Each URL can be overridden in that printer's Settings. Use **Test saved connection** to inspect the saved target. Automatic IP reassignment is disabled for multi-printer safety; use a DHCP reservation or update the saved address if it changes.
 
-The QIDI uses an attached Logitech C920 and mjpg-streamer. At the November 14 verification, status/context worked but snapshots timed out both through the app and directly at the unchanged printer camera URL. Camera recovery remains a separate operational issue.
+The QIDI uses an attached Logitech C920 and mjpg-streamer. On November 15, the working stream was upgraded from 320×240 at 30 fps / JPEG quality 40 to **1280×720 at 10 fps / JPEG quality 50**. The current `webcam.txt` setting is `camera_usb_options="-d /dev/video4 -r 1280x720 -f 10 -y -q 50"`. Only `webcamd` was restarted; the active print continued.
+
+Camera comparison: the original stream delivered about 30 fps at 1.23 Mbps directly; 640×480 / 15 fps / quality 60 delivered about 12 fps at 1.88 Mbps through the public dashboard; 720p / 10 fps / quality 50 delivered about 10 fps at 2.69 Mbps through the public dashboard in a 15-second sample. Native-MJPEG 720p tests were too choppy (about 1–2.6 fps) on this setup and were rejected. A subsequent 30-second public-stream check delivered 291 frames (about 10 fps) at 2.81 Mbps, with one maximum inter-frame gap of 1.06 seconds. These measurements describe delivery cadence and bandwidth, not camera-to-screen latency. Browser/device and remote network behavior still require user observation.
+
+Original and tested camera configs are backed up under `~/qidimonitor/backups/camera-20261115/`. To roll back, upload `webcam-original.txt` as `config/webcam.txt` via Moonraker and restart only `webcamd`. The previous November 14 snapshot outage was not reproduced during these tests.
 
 ## AI configuration
 
