@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import fetch from 'node-fetch';
 import { getConfig } from '../db.js';
+import { recordManualCorrection } from '../correctionMemory.js';
 import { executeFix, readFixState } from '../diagnosisFixes.js';
 import { getPrinterContext } from '../printerContext.js';
 
@@ -218,6 +219,7 @@ router.post('/nozzle', async (req, res) => {
     if (target === ctx.nozzle_target) return res.json({ confirmed:true, observed:target });
     const result = await executeFix({ fix: { control:'nozzle', before:ctx.nozzle_target, after:target, baseline:ctx },
       undo:false, config, request:fetch, context:cfg => readFixState(cfg,fetch,'nozzle',extruder) });
+    if(result.confirmed) await recordManualCorrection('nozzle',ctx.nozzle_target,target,ctx,config).catch(e=>console.warn(`[manual:${req.printerId}] ${e.message}`));
     res.status(result.confirmed ? 200 : 202).json(result);
   } catch(e) { res.status(503).json({ error: `Nozzle change could not be confirmed: ${e.message}. Check the live target before trying again.` }); }
   finally { nozzleBusy.delete(req.printerId); }
@@ -230,6 +232,8 @@ router.post('/gcode', async (req, res) => {
   const config = getConfig(req.printerId);
   const base = moonrakerUrl(config);
   if (!base) return res.status(400).json({ error: 'Printer not configured' });
+  const flowMatch=typeof script==='string' ? script.match(/^M221 S(\d+(?:\.\d+)?)$/) : null;
+  const priorFlow=flowMatch ? await getPrinterContext(config) : null;
   try {
     const r = await fetch(`${base}/printer/gcode/script`, {
       method: 'POST',
@@ -238,6 +242,10 @@ router.post('/gcode', async (req, res) => {
       signal: AbortSignal.timeout(5000),
     });
     if (!r.ok) throw new Error(await r.text());
+    if(flowMatch && priorFlow) {
+      const actual=await readFixState(config,fetch,'flow',priorFlow.active_extruder);
+      if(actual && Math.abs(actual.flow_pct-Number(flowMatch[1]))<=0.5) await recordManualCorrection('flow',priorFlow.flow_pct,actual.flow_pct,priorFlow,config).catch(e=>console.warn(`[manual:${req.printerId}] ${e.message}`));
+    }
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });

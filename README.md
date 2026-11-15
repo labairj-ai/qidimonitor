@@ -118,7 +118,7 @@ The card shows whether monitoring is off, waiting for a print, checking the prin
 
 Enabling checks the printer immediately. While enabled, the scheduler observes printer state roughly every 15 seconds; an idle observation does not consume the diagnosis interval. A detected new/resumed print starts a check promptly. Subsequent diagnosis intervals are measured after each attempt finishes, so long-running AI requests cannot cause overlapping or back-to-back automatic analyses. The service begins monitoring enabled printers at startup. Printer schedules and failures remain isolated.
 
-Disabling prevents new analyses. A camera fetch that has not reached analysis is stopped from proceeding; an AI analysis already underway may finish and save its result, with that state shown in the card. Automatic diagnoses never apply printer changes. Review recommendations in the printer's AI Diagnosis panel and use Apply fix explicitly.
+Disabling prevents new analyses. A camera fetch that has not reached analysis is stopped from proceeding; an AI analysis already underway may finish and save its result, with that state shown in the card. Disabling scheduled monitoring also prevents its pending analysis from submitting an automatic correction. Automatic diagnoses can apply eligible nozzle-temperature and flow corrections when their separate Auto-apply switches are enabled. Speed and fan adjustments still require Apply fix. Disabling automatic checks stops scheduled diagnoses; turn off the Auto-apply switches too if manual live diagnoses should remain review-only.
 
 `GET /api/printers/:printerId/monitor` returns live state and the latest saved automatic result; `POST /api/printers/:printerId/monitor/check` starts a nonblocking check. Enable and interval settings remain in the printer-scoped config API. Runtime progress and scheduling reset on service restart; saved enable/interval settings and diagnosis history persist.
 
@@ -134,9 +134,9 @@ Manual targets allow 180–300°C, narrowed by the printer's reported minimum/ma
 
 `POST /api/printers/qidi/printer/nozzle` accepts `target`, `expected_target`, `extruder`, and `filename`. Before sending a single named-extruder command, it checks the current print, toolhead, target, and hardware limits. Target confirmation tolerates slow command acknowledgments; it does not wait for actual temperature to settle or retry an uncertain command. Simulated-printer tests cover invalid/stale targets, printer isolation, printing, paused prints, and stopped-print rejection. The manual control is QIDI-only for now.
 
-## Reviewed diagnosis fixes
+## Diagnosis fixes: automatic nozzle/flow and reviewed adjustments
 
-Open **QIDI → Monitor → AI Diagnosis** and run **Diagnose Now**. Eligible new diagnoses show **Review a suggested adjustment**, with the setting at diagnosis, proposed value with % or °C units, reason, and **Apply fix** button. Nothing changes automatically. After applying, live readings confirm the result and the manual controls refresh. **Recent adjustments** preserves the log and **Undo** across page reloads and newer diagnoses. Automatic monitoring results appear in the diagnosis panel within fifteen seconds, but still require an explicit Apply click.
+Open **QIDI → Monitor → AI Diagnosis** and run **Diagnose Now**. Eligible new diagnoses show **Review a suggested adjustment**, with the setting at diagnosis, proposed value with % or °C units, reason, and **Apply fix** button. Nozzle and flow changes auto-apply when their switches are enabled; other changes require Apply fix. After applying, live readings confirm the result and the manual controls refresh. **Recent adjustments** preserves the log and **Undo** across page reloads and newer diagnoses. Automatic monitoring results appear in the diagnosis panel within fifteen seconds, and use the same auto-apply preferences.
 
 The first version supports one modest adjustment per diagnosis on the QIDI only:
 
@@ -158,6 +158,18 @@ API: `GET /api/printers/:printerId/diagnose/:diagnosisId/fixes`, `GET /api/print
 The pre-release runtime backup is `~/qidimonitor/backups/pre-reviewed-fixes-20261115-082742.db` (integrity checked, 45 existing diagnoses retained). Live diagnosis/API smoke checks succeeded without applying controls; visual browser QA was unavailable.
 
 Integration tests use disposable databases, a simulated vision model, and simulated printers. They cover bounded proposals, missing data, uploaded-image rejection, stale/changed print rejection, per-printer isolation, duplicate submission, cooldowns, delayed setting updates/acknowledgments, apply/undo, and unconfirmed-action handling. No physical printer settings are changed by the tests.
+
+## Automatic corrections and post-fix comparisons
+
+Under **Automatic monitoring → Automatic corrections**, use **Nozzle temperature — Auto-apply on/off** and **Flow rate — Auto-apply on/off**. The modes are QIDI-only, default off for existing/new printers, and apply only to new live diagnoses begun after enabling. Uploaded photos and existing saved recommendations never trigger automatic application. Enable automatic checks for unattended operation; **Diagnose Now** also honors these preferences. Speed and fan remain review-only. Existing material limits, a one-minute cooldown, a maximum of one bounded adjustment per diagnosis, current-print checks, and target verification all apply.
+
+The adjustment log identifies automatic applications. Undo restores a verified setting and turns off automatic changes for that control. An unconfirmed command also turns off its auto mode and is never resent; an unconfirmed action blocks further fixes until inspected and acknowledged. Switch changes are rechecked immediately before submitting a command, so disabling during analysis stops a future application.
+
+After a confirmed correction, the app records a camera image and retains per-print correction memory in SQLite. It waits at least 60 seconds after flow/other corrections or 120 seconds after nozzle changes, with the nozzle within 3°C of target, then establishes a settled reference image. Subsequent checks compare that reference with the current camera image. Existing strings, scars, and other already-corrected defects are historical, not new issue findings. Another fix for that category requires actual print/Z progress, a clear comparison, a matching reference ID, and explicit evidence of new defects on newly deposited material. Missing images, unclear views, unchanged material, missing comparison evidence, and images analyzed across a concurrent correction cannot authorize a repeat.
+
+The AI Diagnosis panel shows the follow-up state instead of presenting old stringing as a new failure. Memory survives reloads/restarts and does not cross print sessions, printers, toolheads, or materials. Relevant manual nozzle/flow changes in the app are also recorded when linked to a current-print diagnosis. Changes made outside the app can invalidate an existing reference and require a new baseline. Camera comparisons remain AI judgments; uncertainty blocks repeated corrections rather than guessing.
+
+New storage: `correction_observations` tracks post-change images/context and `diagnosis_followups` preserves each follow-up assessment. Images are retained under the configured snapshots directory. Tests use disposable databases and simulated printers/model responses for both auto modes, skipped/uncertain actions, Undo, residual-defect suppression, new-growth evidence, comparison-reference checks, persistence, and print isolation.
 
 ## Chamber light
 

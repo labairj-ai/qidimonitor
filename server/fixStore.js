@@ -12,11 +12,15 @@ export function saveFixes(fixes) {
   const insert = db.prepare('INSERT INTO diagnosis_fixes(id,diagnosis_id,printer_id,payload,updated_at) VALUES (?,?,?,?,?)');
   for (const f of fixes) insert.run(f.id,f.diagnosis_id,f.printer_id,JSON.stringify(f),f.created_at);
 }
-function decode(row) { return row ? { ...JSON.parse(row.payload), state: row.state, updated_at: row.updated_at, applied_at: row.applied_at, message: row.message } : null; }
+function decode(row) {
+  let automatic=false;
+  if (row) { const event=db.prepare("SELECT detail FROM diagnosis_fix_events WHERE fix_id=? AND action='apply' AND outcome='submitted' ORDER BY id DESC LIMIT 1").get(row.id);
+    try { automatic=JSON.parse(event?.detail || '{}').source === 'automatic'; } catch {} }
+  return row ? { ...JSON.parse(row.payload), applied_automatically:automatic, state: row.state, updated_at: row.updated_at, applied_at: row.applied_at, message: row.message } : null; }
 export function getFix(id, printerId) { return decode(db.prepare('SELECT * FROM diagnosis_fixes WHERE id=? AND printer_id=?').get(id,printerId)); }
 export function listFixes(diagnosisId, printerId) { return db.prepare('SELECT * FROM diagnosis_fixes WHERE diagnosis_id=? AND printer_id=?').all(diagnosisId,printerId).map(decode); }
 export function fixEvents(diagnosisId, printerId) { return db.prepare('SELECT e.* FROM diagnosis_fix_events e JOIN diagnosis_fixes f ON e.fix_id=f.id WHERE f.diagnosis_id=? AND e.printer_id=? ORDER BY e.id DESC').all(diagnosisId,printerId); }
-export function claimFix(fix, action, now = Date.now()) {
+export function claimFix(fix, action, now = Date.now(), source = 'manual') {
   db.exec('BEGIN IMMEDIATE');
   try {
     const expected = action === 'apply' ? 'ready' : 'applied';
@@ -31,7 +35,7 @@ export function claimFix(fix, action, now = Date.now()) {
       if (newer) throw new Error('Run a new diagnosis after the previous adjustment before applying another fix.');
     }
     db.prepare('UPDATE diagnosis_fixes SET state=?,updated_at=?,message=NULL WHERE id=?').run(action === 'apply' ? 'applying' : 'undoing',now,fix.id);
-    db.prepare('INSERT INTO diagnosis_fix_events(fix_id,printer_id,timestamp,action,outcome) VALUES (?,?,?,?,?)').run(fix.id,fix.printer_id,now,action,'submitted');
+    db.prepare('INSERT INTO diagnosis_fix_events(fix_id,printer_id,timestamp,action,outcome,detail) VALUES (?,?,?,?,?,?)').run(fix.id,fix.printer_id,now,action,'submitted',JSON.stringify({source}));
     db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }
 }
@@ -62,4 +66,9 @@ export function recentFixes(printerId) {
 }
 export function recentFixEvents(printerId) {
   return db.prepare('SELECT * FROM diagnosis_fix_events WHERE printer_id=? ORDER BY id DESC LIMIT 40').all(printerId);
+}
+
+export function recordFixEvent(fix, action, outcome, detail) {
+  db.prepare('INSERT INTO diagnosis_fix_events(fix_id,printer_id,timestamp,action,outcome,detail) VALUES (?,?,?,?,?,?)').run(fix.id,fix.printer_id,Date.now(),action,outcome,JSON.stringify(detail));
+  if (outcome==='skipped') db.prepare('UPDATE diagnosis_fixes SET message=? WHERE id=?').run(detail.message,fix.id);
 }

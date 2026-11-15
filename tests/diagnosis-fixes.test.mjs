@@ -120,6 +120,8 @@ test('reviewed fix API applies once, verifies delayed changes, logs and undoes w
 });
 
 test('stale or changed-print fixes send nothing; cooldown is enforced across diagnoses',async()=>{
+  // Independent print scenario: retain cooldown events but retire prior applied/undone fixtures.
+  store.default.prepare("UPDATE diagnosis_fixes SET state='dismissed' WHERE state IN ('applied','undone')").run();
   const d=await diagnose();const fix=d.fixes[0];const count=scripts.length;
   store.setConfig({moonraker_url:device+'/'},'qidi');
   assert.equal((await json(`/api/printers/qidi/diagnose/fixes/${fix.id}/apply`,post)).status,409);
@@ -190,6 +192,44 @@ test('automatic monitoring API reports state, saves enable/disable and rejects i
   assert.equal((await json('/api/printers/u1/config',put({auto_enabled:'1'}))).status,409);
   assert.equal((await json('/api/printers/u1/monitor')).data.enabled,false);
   assert.equal((await json('/api/printers/qidi/config',put({auto_interval_min:'0'}))).status,400);
+});
+
+test('only opted-in nozzle/flow recommendations auto-apply; old defects cannot trigger repeats',async()=>{
+  store.default.prepare("UPDATE diagnosis_fixes SET state='dismissed'").run();store.default.prepare('DELETE FROM diagnosis_fix_events').run();
+  printState='printing';material='PETG';flow=100;nozzleTarget=240;nozzleActual=240;commandMode='normal';
+  store.setConfig({auto_enabled:'0',auto_nozzle_enabled:'1',auto_flow_enabled:'1'},'qidi');
+  recommendation=parsed('flow',98,'over_extrusion');const count=scripts.length;
+  const first=await diagnose();assert.equal(first.auto_actions[0].confirmed,true);assert.equal(flow,98);assert.equal(scripts[count],'M221 S98');
+  const saved=(await json(`/api/printers/qidi/diagnose/${first.id}/fixes`)).data.fixes[0];assert.equal(saved.applied_automatically,true);
+  const again=await diagnose();assert.equal(again.fixes.length,0);assert.equal(again.issues.length,0);assert.ok(again.followup.categories.includes('over_extrusion'));assert.equal(scripts.length,count+1);
+  const undo=await json(`/api/printers/qidi/diagnose/fixes/${saved.id}/undo`,post);assert.equal(undo.status,200);assert.equal(flow,100);assert.equal(store.getConfig('qidi').auto_flow_enabled,'0');
+  recommendation=parsed();const speed=await diagnose();assert.equal(speed.fixes.length,1);assert.deepEqual(speed.auto_actions,[]);
+  // Nozzle auto-application uses the same target verification and starts settling memory.
+  store.default.prepare("UPDATE diagnosis_fixes SET state='dismissed'").run();store.default.prepare('DELETE FROM diagnosis_fix_events').run();
+  store.setConfig({auto_nozzle_enabled:'1'},'qidi');nozzleTarget=250;nozzleActual=250.2;recommendation=parsed('nozzle',240,'stringing');
+  const temp=await diagnose();assert.equal(temp.auto_actions[0].confirmed,true);assert.equal(nozzleTarget,240);
+  const tempFix=(await json(`/api/printers/qidi/diagnose/${temp.id}/fixes`)).data.fixes[0];assert.equal(tempFix.applied_automatically,true);
+  const warming=await diagnose();assert.equal(warming.fixes.length,0);assert.equal(warming.issues.length,0);
+  assert.equal((await json(`/api/printers/qidi/diagnose/fixes/${tempFix.id}/undo`,post)).status,200);assert.equal(nozzleTarget,250);assert.equal(store.getConfig('qidi').auto_nozzle_enabled,'0');
+  nozzleTarget=240;nozzleActual=240;
+  // An uncertain automatic command disables its control and is never resent.
+  store.default.prepare("UPDATE diagnosis_fixes SET state='dismissed'").run();store.default.prepare('DELETE FROM diagnosis_fix_events').run();
+  store.setConfig({auto_flow_enabled:'1'},'qidi');recommendation=parsed('flow',98,'over_extrusion');commandMode='reject';
+  const failed=await diagnose();assert.equal(failed.auto_actions[0].confirmed,false);assert.equal(store.getConfig('qidi').auto_flow_enabled,'0');
+  const countAfter=scripts.length;await diagnose();assert.equal(scripts.length,countAfter);
+  const u1=await json('/api/printers/u1/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({auto_flow_enabled:'1'})});assert.equal(u1.status,409);
+});
+
+test('disabling scheduled monitoring prevents automatic setting changes from a pending scheduled result',async()=>{
+  store.default.prepare("UPDATE diagnosis_fixes SET state='dismissed'").run();store.default.prepare('DELETE FROM diagnosis_fix_events').run();
+  store.setConfig({auto_enabled:'0',auto_flow_enabled:'0',auto_nozzle_enabled:'0'},'qidi');
+  flow=100;commandMode='normal';recommendation=parsed('flow',98,'over_extrusion');
+  const d=await diagnose();const fix=d.fixes[0];assert.ok(fix);const count=scripts.length;
+  store.setConfig({auto_flow_enabled:'1'},'qidi');
+  const {applySavedFix}=await import('../server/fixService.js');
+  await assert.rejects(()=>applySavedFix(fix.id,'qidi',{automatic:true,scheduled:true}),/monitoring was disabled/);
+  assert.equal(scripts.length,count);
+  store.setConfig({auto_flow_enabled:'0'},'qidi');
 });
 
 test.after(async()=>{

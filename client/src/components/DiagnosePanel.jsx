@@ -73,6 +73,7 @@ function DiagnosisChat({ result }) {
             summary: result.summary,
             issues: result.issues,
             printer_context: result.printer_context,
+            followup:result.followup,
             print_file: result.print_file,
           },
         }),
@@ -259,7 +260,7 @@ export default function DiagnosePanel({ config, onResult, latestResult }) {
   return (
     <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ fontWeight: 700, fontSize: 14 }}>AI Diagnosis</div>
-      <p style={{ color: 'var(--muted)', fontSize: 12 }}>Review first · eligible suggestions offer an Apply fix button. Printer controls are never changed automatically.</p>
+      <p style={{ color: 'var(--muted)', fontSize: 12 }}>Nozzle and flow fixes can auto-apply when enabled in Automatic monitoring. Speed and fan changes require Apply fix.</p>
 
       <div style={{ display: 'flex', gap: 10 }}>
         <button
@@ -291,14 +292,15 @@ export default function DiagnosePanel({ config, onResult, latestResult }) {
       {result && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontWeight: 700, fontSize: 16, color: SEVERITY_COLORS[result.overall_severity] }}>
-              {result.overall_severity === 'ok' ? 'Print looks good' :
+            <span style={{ fontWeight: 700, fontSize: 16, color: result.followup && !result.issues?.length ? 'var(--muted)' : SEVERITY_COLORS[result.overall_severity] }}>
+              {result.followup && !result.issues?.length ? 'Follow-up: no confirmed new issues' : result.overall_severity === 'ok' ? 'Print looks good' :
                result.overall_severity === 'warning' ? 'Issues detected' : 'Critical issues'}
             </span>
-            <SeverityChip sev={result.overall_severity} />
+            {!(result.followup && !result.issues?.length) && <SeverityChip sev={result.overall_severity} />}
           </div>
 
-          {result.summary && (
+          {result.followup && <div className="card" style={{fontSize:13}}><strong>Follow-up after correction</strong><p>{result.followup.note}</p><p style={{color:'var(--muted)',marginTop:6}}>Previously corrected: {result.followup.categories.map(c=>ISSUE_LABELS[c] || c).join(', ')}. Existing marks are excluded from new-issue findings.</p></div>}
+          {result.summary && (!result.followup || result.issues?.length > 0) && (
             <p style={{ fontSize: 13, color: 'var(--muted)' }}>{result.summary}</p>
           )}
 

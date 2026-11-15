@@ -102,7 +102,7 @@ try {
 export function getConfig(id = 'qidi') {
   const row = db.prepare('SELECT settings FROM printers WHERE id=?').get(id);
   if (!row) throw new Error('Unknown printer');
-  return { ...JSON.parse(row.settings), id };
+  return { auto_nozzle_enabled:'0', auto_flow_enabled:'0', ...JSON.parse(row.settings), id };
 }
 export function listPrinters() {
   return db.prepare('SELECT id FROM printers ORDER BY rowid').all().map(r => getConfig(r.id));
@@ -132,6 +132,7 @@ export function insertDiagnosis(record) {
 export function getHistory(limit = 50, printerId = 'qidi') {
   return db.prepare('SELECT * FROM diagnoses WHERE printer_id=? ORDER BY id DESC LIMIT ?').all(printerId, limit).map(r => ({
     ...r,
+    followup:getFollowup(r.id,printerId),
     issues: JSON.parse(r.issues || '[]'),
     auto_triggered: !!r.auto_triggered,
     printer_context: r.printer_context ? JSON.parse(r.printer_context) : null,
@@ -144,10 +145,14 @@ export function getDiagnosis(id, printerId = 'qidi') {
   const row = db.prepare('SELECT * FROM diagnoses WHERE id=? AND printer_id=?').get(id,printerId);
   if (!row) return null;
   let parsed = {}; try { parsed = JSON.parse(row.raw_response || '{}'); } catch {}
-  return { ...row, issues: JSON.parse(row.issues || '[]'), printer_context: row.printer_context ? JSON.parse(row.printer_context) : null, summary: parsed?.summary || '' };
+  return { ...row, followup:getFollowup(row.id,printerId), issues: JSON.parse(row.issues || '[]'), printer_context: row.printer_context ? JSON.parse(row.printer_context) : null, summary: parsed?.summary || '' };
 }
 
 export function getLatestAutoDiagnosis(printerId) {
   const row = db.prepare('SELECT id,timestamp,overall_severity AS severity FROM diagnoses WHERE printer_id=? AND auto_triggered=1 ORDER BY id DESC LIMIT 1').get(printerId);
   return row || null;
 }
+
+db.exec(`CREATE TABLE IF NOT EXISTS diagnosis_followups (diagnosis_id INTEGER PRIMARY KEY,printer_id TEXT NOT NULL,payload TEXT NOT NULL)`);
+export function saveFollowup(id,printerId,data) { db.prepare('INSERT OR REPLACE INTO diagnosis_followups VALUES (?,?,?)').run(id,printerId,JSON.stringify(data)); }
+export function getFollowup(id,printerId) {const r=db.prepare('SELECT payload FROM diagnosis_followups WHERE diagnosis_id=? AND printer_id=?').get(id,printerId);return r?JSON.parse(r.payload):null;}

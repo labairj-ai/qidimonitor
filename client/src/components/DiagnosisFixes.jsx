@@ -46,7 +46,7 @@ export default function DiagnosisFixes({ result, config, recent = false }) {
   };
   return <section style={{ borderTop: '1px solid var(--border)', paddingTop: 12 }}>
     <h3 style={{ fontSize: 14, marginBottom: 6 }}>{recent ? 'Recent adjustments' : 'Review a suggested adjustment'}</h3>
-    <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 12 }}>Nothing changes automatically. Apply one small adjustment, inspect the print, then run a new diagnosis to assess it.</p>
+    <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 12 }}>Enabled nozzle and flow fixes apply automatically. Other fixes need review. Follow-up checks compare new material against a saved post-correction image.</p>
     {data.fixes.length === 0 && <p style={{ fontSize: 13, color: 'var(--muted)' }}>{recent ? 'No reviewed adjustments have been submitted yet.' : config?.model !== 'qidi' ? 'Reviewed control changes are currently supported for the QIDI only.' : 'No eligible live adjustment from this diagnosis. Follow the advice above; uploaded images, missing readings, and issues needing inspection do not offer control changes.'}</p>}
     {data.fixes.map(fix => {
       const unit = fix.control === 'nozzle' ? '°C' : '%';
@@ -55,16 +55,19 @@ export default function DiagnosisFixes({ result, config, recent = false }) {
       const inFlight = ['applying','undoing'].includes(fix.state);
       return <div key={fix.id} style={{ background: 'var(--surface2)', borderRadius: 8, padding: 12, marginBottom: 10 }}>
         <strong>{LABELS[fix.control]}: {fix.before}{unit} → {fix.after}{unit}</strong>
+        {fix.manual_setting && <p style={{fontSize:12,color:'var(--muted)'}}>Manual control adjustment · tracked for follow-up comparisons</p>}
+        {fix.applied_automatically && <p style={{color:'var(--accent)',fontSize:12}}>Automatically applied</p>}
         <p style={{ fontSize: 13, marginTop: 6 }}>{fix.reason}</p>
+        {fix.state==='ready' && fix.message && <p style={{fontSize:12,color:'var(--warn)'}}>Automatic change skipped: {fix.message}</p>}
         <p style={{ color: 'var(--muted)', fontSize: 12, margin: '6px 0' }}>At diagnosis: {fix.before}{unit}. Proposed: {fix.after}{unit}. Live readings and print identity are checked again before applying.</p>
         {fix.control === 'nozzle' && <p style={{ fontSize: 12, color: 'var(--muted)' }}>{fix.baseline.filament_type} · Measured at diagnosis: {fix.baseline.nozzle_temp}°C. Applies to the nozzle target. Actual temperature takes time to settle; inspect the print before another adjustment.</p>}
         <p role="status" style={{ fontSize: 12, margin: '6px 0' }}>{busy || inFlight ? 'Checking printer and confirming change…' : fix.state === 'ready' ? expired ? 'Expired — run a new diagnosis.' : 'Ready for your review · expires after 10 minutes' : fix.state === 'applied' ? undoExpired ? 'Applied and verified. Undo has expired; use manual controls if needed.' : 'Applied and verified. Inspect the print before making another adjustment.' : fix.state === 'undone' ? 'Previous setting restored and verified.' : fix.state === 'dismissed' ? 'Unconfirmed change acknowledged. Use a fresh diagnosis for further adjustments.' : fix.message || fix.state}</p>
         {fix.state === 'ready' && <button className="btn-primary" disabled={busy || expired} onClick={() => act(fix,'apply')}>Apply fix · {LABELS[fix.control]} {fix.after}{unit}</button>}
-        {fix.state === 'applied' && <button className="btn-ghost" disabled={busy || undoExpired} onClick={() => act(fix,'undo')}>Undo · restore {fix.before}{unit}</button>}
+        {fix.state === 'applied' && !fix.manual_setting && <button className="btn-ghost" disabled={busy || undoExpired} onClick={() => act(fix,'undo')}>Undo · restore {fix.before}{unit}{fix.applied_automatically ? ' & disable auto' : ''}</button>}
         {fix.state === 'unconfirmed' && <><p style={{ fontSize: 12 }}>Inspect the live controls first. Acknowledging this result sends no printer command.</p><button className="btn-ghost" disabled={busy} onClick={() => act(fix,'dismiss')}>I checked the current setting</button></>}
       </div>;
     })}
     {error && <p role="alert" style={{ fontSize: 13, color: 'var(--crit)' }}>{error}</p>}
-    {data.events.length > 0 && <details style={{ marginTop: 10, fontSize: 12 }}><summary>Adjustment log</summary><ul style={{ paddingLeft: 18 }}>{data.events.map(e => <li key={e.id}>{new Date(e.timestamp).toLocaleTimeString()} · {e.action} · {e.outcome}</li>)}</ul></details>}
+    {data.events.length > 0 && <details style={{ marginTop: 10, fontSize: 12 }}><summary>Adjustment log</summary><ul style={{ paddingLeft: 18 }}>{data.events.map(e => <li key={e.id}>{new Date(e.timestamp).toLocaleTimeString()} · {(()=>{try{return JSON.parse(e.detail || '{}').source==='automatic'?'Auto · ':'';}catch{return '';}})()}{e.action} · {e.outcome}</li>)}</ul></details>}
   </section>;
 }

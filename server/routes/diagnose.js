@@ -5,8 +5,10 @@ import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
-import { getConfig, insertDiagnosis, getHistory } from '../db.js';
+import { getConfig, insertDiagnosis, getHistory, saveFollowup } from '../db.js';
 import { buildFixes } from '../diagnosisFixes.js';
+import { autoApplyFixes } from '../fixService.js';
+import { prepareFollowup, filterFollowup, refreshFollowup } from '../correctionMemory.js';
 import { saveFixes } from '../fixStore.js';
 import { getPrinterContext, formatContextForPrompt } from '../printerContext.js';
 
@@ -59,15 +61,17 @@ Do not propose retraction, motion, calibration, bed/chamber temperature, other h
 
 const DIAGNOSIS_SCHEMA = {
   type: 'object', additionalProperties: false,
-  required: ['overall_severity','issues','summary','control_suggestions'],
+  required: ['overall_severity','issues','summary','control_suggestions','comparison'],
   properties: {
     overall_severity: { type: 'string', enum: ['ok','warning','critical'] },
     summary: { type: 'string' },
+    comparison:{type:'object',required:['reference_id','clear_view'],properties:{reference_id:{type:'string'},clear_view:{type:'boolean'}}},
     issues: { type: 'array', items: { type: 'object', additionalProperties: false,
-      required: ['category','severity','description','suggestion'], properties: {
+      required: ['category','severity','description','suggestion','observation','new_evidence'], properties: {
         category: { type: 'string', enum: ['stringing','layer_delamination','warping','under_extrusion','over_extrusion','elephant_foot','ghosting','spaghetti','blob_zit','bed_adhesion'] },
         severity: { type: 'string', enum: ['minor','moderate','severe'] },
         description: { type: 'string' }, suggestion: { type: 'string' },
+        observation:{type:'string',enum:['new','existing','uncertain']},new_evidence:{type:'string'},
       } } },
     control_suggestions: { type: 'array', maxItems: 1, items: { type: 'object', additionalProperties: false,
       required: ['control','value','issue_category','reason'], properties: {
@@ -85,6 +89,7 @@ async function runDiagnosis({ imageBuffer, imagePath, printFile, autoTriggered, 
   // Fetch printer context in parallel with image encoding
   const ctx = await getPrinterContext(config);
   const contextText = formatContextForPrompt(ctx);
+  let followup=uploaded?null:prepareFollowup(ctx,config,imageBuffer);
 
   const userText = contextText
     ? `${uploaded ? 'This is an uploaded image. Do not suggest live control changes. ' : ''}Analyze this 3D print image and identify any quality issues.\n\n${contextText}`
@@ -93,8 +98,8 @@ async function runDiagnosis({ imageBuffer, imagePath, printFile, autoTriggered, 
   const body = {
     model,
     system: SYSTEM_PROMPT + `\nPrinter: ${config.name} (${config.model}).`,
-    prompt: userText,
-    images: [base64],
+    prompt: userText + (followup ? `\nFOLLOW-UP AFTER CORRECTION: ${followup.note}\nPreviously corrected categories: ${followup.categories.join(', ')}. Reference ID: ${followup.reference_id}. ${followup.ready ? 'Two images are supplied: FIRST is the saved post-fix baseline; SECOND is the current print. Compare the same visible surfaces. Report a previously corrected issue only if NEW material deposited above baseline Z '+followup.reference_z+'mm shows new defects. Existing strings/marks remain on the object and are NOT new failure evidence. Mark those observation existing. If motion, occlusion, lighting, or viewpoint prevents comparison, set clear_view false and observation uncertain. For genuinely new defects, give precise new_evidence tied to the changed region and matching reference_id in comparison.' : 'No reliable temporal comparison is available yet. Do not recommend another fix for previously corrected categories. Mark their observation existing or uncertain.'}` : '\nThis is an initial assessment; no post-fix baseline exists. Set comparison reference_id to an empty string.') + ((config.auto_nozzle_enabled==='1' || config.auto_flow_enabled==='1') ? '\nAutomatic application is enabled for eligible '+[config.auto_nozzle_enabled==='1'?'nozzle':'',config.auto_flow_enabled==='1'?'flow':''].filter(Boolean).join(' and ')+'. Prefer those controls only when justified by evidence and within the stated limits. Never invent a recommendation to force a change.' : ''),
+    images: [...(followup?.images || []),base64],
     stream: false,
     format: DIAGNOSIS_SCHEMA,
     options: { num_ctx: 8192, temperature: 0.1 },
@@ -127,6 +132,8 @@ async function runDiagnosis({ imageBuffer, imagePath, printFile, autoTriggered, 
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Diagnosis response must be an object');
   if (!Array.isArray(parsed.issues) || parsed.issues.some(i => !i || typeof i.category !== 'string' || typeof i.description !== 'string' || typeof i.suggestion !== 'string' || !['minor','moderate','severe'].includes(i.severity))) parsed.control_suggestions = [];
   parsed.issues = Array.isArray(parsed.issues) ? parsed.issues.filter(i => i && typeof i.category === 'string' && typeof i.description === 'string' && typeof i.suggestion === 'string' && ['minor','moderate','severe'].includes(i.severity)) : [];
+  if(!uploaded) followup=refreshFollowup(followup,ctx,config);
+  const filtered=filterFollowup(parsed,followup);parsed=filtered.parsed;
   const record = {
     printer_id: config.id,
     timestamp: new Date().toISOString(),
@@ -142,7 +149,11 @@ async function runDiagnosis({ imageBuffer, imagePath, printFile, autoTriggered, 
 
   record.id = Number(insertDiagnosis(record).lastInsertRowid);
   const fixes = buildFixes(parsed,ctx,{ printerId: config.id, diagnosisId: record.id, uploaded, now: ctx?.captured_at || Date.now(), connection: config.moonraker_url || `http://${config.printer_ip}:7125` });
+  for(const fix of fixes) if(filtered.metadata?.verified_categories.includes(fix.category)) fix.followup_reference=filtered.metadata.reference_id;
   saveFixes(fixes);
+  if(filtered.metadata) saveFollowup(record.id,config.id,filtered.metadata);
+  record.followup=filtered.metadata;
+  record.auto_actions=uploaded?[]:await autoApplyFixes(fixes,config,{scheduled:!!autoTriggered});
   record.fixes = fixes;
   return record;
 }
@@ -200,6 +211,7 @@ router.post('/diagnose/chat', async (req, res) => {
 
   if (context) {
     systemLines.push(`DIAGNOSIS: ${(context.overall_severity || 'unknown').toUpperCase()}`);
+    if(context.followup) systemLines.push(`FOLLOW-UP: ${context.followup.note}. Previously corrected categories ${context.followup.categories.join(', ')} are historical unless new post-correction evidence is explicitly verified. Do not recommend another adjustment for old defects.`);
     if (context.summary) systemLines.push(`Summary: ${context.summary}`);
 
     if (context.issues?.length > 0) {

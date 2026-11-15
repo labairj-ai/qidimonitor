@@ -24,7 +24,7 @@ export function createMonitor({ printers = listPrinters, request = fetch, diagno
     const setup_error = monitorSetup(config);
     const phase = !enabled ? state.busy ? 'finishing' : 'disabled' : setup_error ? 'not_configured' : state.phase;
     const { next_poll_at, was_printing, last_filename, last_duration, ...visible } = state;
-    return { ...visible, phase, enabled, interval_minutes:intervalFor(config)/60000, setup_error, next_check_at:enabled ? state.next_check_at : null };
+    return { ...visible, phase, enabled, auto_nozzle_enabled:config.auto_nozzle_enabled === '1', auto_flow_enabled:config.auto_flow_enabled === '1', interval_minutes:intervalFor(config)/60000, setup_error, next_check_at:enabled ? state.next_check_at : null };
   };
   const stillConfigured = config => {
     const current = find(config.id);

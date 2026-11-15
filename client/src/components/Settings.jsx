@@ -34,7 +34,7 @@ export default function Settings({ config, onSave }) {
       const r = await apiFetch('/api/config', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
+        body: JSON.stringify(Object.fromEntries([...FIELDS.map(f=>f.key),...(config?.model==='u1'?['controls_enabled']:[])].map(key=>[key,form[key] || '']))),
       });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || 'Save failed');
