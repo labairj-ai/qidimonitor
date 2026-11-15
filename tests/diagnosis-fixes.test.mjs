@@ -177,6 +177,21 @@ test('manual nozzle entry rejects stale/invalid targets and applies while printi
   assert.deepEqual(scripts.slice(count),['SET_HEATER_TEMPERATURE HEATER=extruder TARGET=240','SET_HEATER_TEMPERATURE HEATER=extruder TARGET=245']);
 });
 
+test('automatic monitoring API reports state, saves enable/disable and rejects incomplete setup',async()=>{
+  const put=body=>({method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  assert.equal((await json('/api/printers/qidi/monitor')).data.enabled,false);
+  assert.equal((await json('/api/printers/qidi/monitor/check',post)).status,409);
+  assert.equal((await json('/api/printers/qidi/config',put({auto_interval_min:'1',auto_enabled:'1'}))).status,200);
+  await new Promise(r=>setTimeout(r,30));
+  const status=await json('/api/printers/qidi/monitor');assert.equal(status.data.enabled,true);assert.equal(status.data.interval_minutes,1);assert.equal(status.data.phase,'waiting_for_print');
+  assert.equal((await json('/api/printers/qidi/monitor/check',post)).status,202);
+  assert.equal((await json('/api/printers/qidi/config',put({auto_enabled:'0'}))).status,200);
+  assert.equal((await json('/api/printers/qidi/monitor')).data.enabled,false);
+  assert.equal((await json('/api/printers/u1/config',put({auto_enabled:'1'}))).status,409);
+  assert.equal((await json('/api/printers/u1/monitor')).data.enabled,false);
+  assert.equal((await json('/api/printers/qidi/config',put({auto_interval_min:'0'}))).status,400);
+});
+
 test.after(async()=>{
   child?.kill();await new Promise(r=>fake.close(r));store.default.close();rmSync(dir,{recursive:true,force:true});
 });

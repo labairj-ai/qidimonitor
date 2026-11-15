@@ -146,3 +146,8 @@ export function getDiagnosis(id, printerId = 'qidi') {
   let parsed = {}; try { parsed = JSON.parse(row.raw_response || '{}'); } catch {}
   return { ...row, issues: JSON.parse(row.issues || '[]'), printer_context: row.printer_context ? JSON.parse(row.printer_context) : null, summary: parsed?.summary || '' };
 }
+
+export function getLatestAutoDiagnosis(printerId) {
+  const row = db.prepare('SELECT id,timestamp,overall_severity AS severity FROM diagnoses WHERE printer_id=? AND auto_triggered=1 ORDER BY id DESC LIMIT 1').get(printerId);
+  return row || null;
+}

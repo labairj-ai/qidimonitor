@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { getConfig, setConfig } from '../db.js';
 
+import { monitor } from '../monitorRuntime.js';
+import { monitorSetup } from '../monitor.js';
 import { validateSettings } from '../printers.js';
 
 const router = Router();
@@ -16,7 +18,11 @@ router.put('/', (req, res) => {
     if (req.body[key] !== undefined) updates[key] = req.body[key];
   }
   try { validateSettings(updates); } catch (e) { return res.status(400).json({ error: e.message }); }
+  const before = getConfig(req.printerId);
+  const after = { ...before, ...updates };
+  if (after.auto_enabled === '1' && monitorSetup(after)) return res.status(409).json({ error:monitorSetup(after) });
   setConfig(updates, req.printerId);
+  monitor.configurationChanged(req.printerId,before,after);
   res.json({ ok: true });
 });
 

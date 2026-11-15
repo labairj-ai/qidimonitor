@@ -110,6 +110,18 @@ Runtime files, excluded from Git:
 
 The transactional migration assigns old records to `qidi` and creates an unconfigured `u1`. Migration is repeatable and preserves existing QIDI setting values. The November 14 migration preserved 42 diagnoses and two slicing jobs; database integrity passed.
 
+## Automatic monitoring
+
+The **Automatic monitoring** card appears below Print status in both the overview and each printer's Monitor tab. Click **Enable automatic checks** or **Disable automatic checks**. Enter a whole-number interval from **1 to 1440 minutes** and click **Save interval**; editing the field alone sends no request. **Check now** starts a due-independent check when enabled and prevents overlapping analyses for that printer.
+
+The card shows whether monitoring is off, waiting for a print, checking the printer/camera, analyzing, scheduled, or in error, plus the last successful check, next scheduled check, and latest saved automatic result. Save and connection errors are visible. A printer address and snapshot camera must be configured before enabling. Vision/camera failures can be retried explicitly with Check now.
+
+Enabling checks the printer immediately. While enabled, the scheduler observes printer state roughly every 15 seconds; an idle observation does not consume the diagnosis interval. A detected new/resumed print starts a check promptly. Subsequent diagnosis intervals are measured after each attempt finishes, so long-running AI requests cannot cause overlapping or back-to-back automatic analyses. The service begins monitoring enabled printers at startup. Printer schedules and failures remain isolated.
+
+Disabling prevents new analyses. A camera fetch that has not reached analysis is stopped from proceeding; an AI analysis already underway may finish and save its result, with that state shown in the card. Automatic diagnoses never apply printer changes. Review recommendations in the printer's AI Diagnosis panel and use Apply fix explicitly.
+
+`GET /api/printers/:printerId/monitor` returns live state and the latest saved automatic result; `POST /api/printers/:printerId/monitor/check` starts a nonblocking check. Enable and interval settings remain in the printer-scoped config API. Runtime progress and scheduling reset on service restart; saved enable/interval settings and diagnosis history persist.
+
 ## Manual nozzle temperature
 
 During an active or paused QIDI print, open **Monitor → Print status → Nozzle temperature**, enter a whole-number target in °C, and click **Apply temperature**. This control also appears in the all-printers overview. Actual temperature and current target are displayed separately; typing does not send a command. No diagnosis or AI approval is needed.

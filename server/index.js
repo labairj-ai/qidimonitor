@@ -8,7 +8,8 @@ import diagnoseRouter from './routes/diagnose.js';
 import filesRouter from './routes/files.js';
 import slicerRouter from './routes/slicer.js';
 import { printersRouter, printerScope } from './printers.js';
-import { createMonitor } from './monitor.js';
+import { monitor } from './monitorRuntime.js';
+import monitorRouter from './routes/monitor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 4200;
@@ -19,6 +20,7 @@ app.use(express.json());
 
 export const api = express.Router();
 api.use('/config', configRouter);
+api.use('/monitor', monitorRouter);
 api.use('/printer', printerRouter);
 api.use('/diagnose', fixesRouter);
 api.use('/', diagnoseRouter);
@@ -59,6 +61,7 @@ listen();
 
 // Each printer has an independent schedule and overlap guard.
 function startAutoMonitor() {
-  const tick = createMonitor();
-  setInterval(tick, 60000);
+  const tick = () => monitor().catch(e => console.warn(`[auto] ${e.message}`));
+  void tick();
+  setInterval(tick, 5000);
 }
