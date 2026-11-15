@@ -110,6 +110,30 @@ Runtime files, excluded from Git:
 
 The transactional migration assigns old records to `qidi` and creates an unconfigured `u1`. Migration is repeatable and preserves existing QIDI setting values. The November 14 migration preserved 42 diagnoses and two slicing jobs; database integrity passed.
 
+## Reviewed diagnosis fixes
+
+Open **QIDI → Monitor → AI Diagnosis** and run **Diagnose Now**. Eligible new diagnoses show **Review a suggested adjustment**, with the setting at diagnosis, proposed percentage, reason, and **Apply fix** button. Nothing changes automatically. After applying, live readings confirm the result and the manual controls refresh. **Recent adjustments** preserves the log and **Undo** across page reloads and newer diagnoses. Automatic monitoring results appear in the diagnosis panel within fifteen seconds, but still require an explicit Apply click.
+
+The first version supports one modest adjustment per diagnosis on the QIDI only:
+
+| Control | Limits |
+|---|---|
+| Speed | Reduce by 5–10 percentage points for ghosting or under-extrusion; final override 50–100% |
+| Flow | Change by 1–2 percentage points; current and final override 95–105%; direction must match under/over-extrusion |
+| Part cooling fan | Increase by at most 10 percentage points, after the first two layer heights; final PLA 50–100%, PETG 20–50%, ABS/ASA/TPU 0–20% |
+
+Flow and fan proposals require a recognized material from file metadata. Missing telemetry, uploaded images, critical/severe findings, spaghetti, warping, bed adhesion failures, and layer delamination offer advice rather than executable changes. Temperature, retraction, calibration, motion, power, and heater changes are not part of reviewed fixes. A suggested adjustment is an experiment to inspect, not a guaranteed repair.
+
+Proposals expire ten minutes after the captured readings. Before Apply or Undo, the server rechecks the active print/session, toolhead, material, existing control value, and adjustment limits. Allow at least one minute between fixes and run a new diagnosis after the previous change. Undo is available for ten minutes after a verified application while the same print and unchanged adjusted value are still present. Slicer commands can subsequently override fan settings; Undo then requires manual review.
+
+Every submitted action and outcome is stored in SQLite (`diagnosis_fixes` and `diagnosis_fix_events`). The vision request uses [Ollama structured output](https://ollama.com/blog/structured-outputs) without a sample diagnosis for the model to copy. Requests identify a saved proposal; arbitrary AI or client G-code is never executed. Duplicate clicks cannot resend it. Slow acknowledgments are checked against actual settings; uncertain changes are not retried, including after a service restart. Inspect live controls and acknowledge an unconfirmed result before submitting a fresh fix. Acknowledgement sends no printer command.
+
+API: `GET /api/printers/:printerId/diagnose/:diagnosisId/fixes`, `GET /api/printers/:printerId/diagnose/fixes/recent`, and `POST /api/printers/:printerId/diagnose/fixes/:fixId/apply|undo|dismiss`. Fixes, logs, and requests are scoped to their printer. Existing diagnoses remain readable; only new eligible diagnoses generate proposals.
+
+The pre-release runtime backup is `~/qidimonitor/backups/pre-reviewed-fixes-20261115-082742.db` (integrity checked, 45 existing diagnoses retained). Live diagnosis/API smoke checks succeeded without applying controls; visual browser QA was unavailable.
+
+Integration tests use disposable databases, a simulated vision model, and simulated printers. They cover bounded proposals, missing data, uploaded-image rejection, stale/changed print rejection, per-printer isolation, duplicate submission, cooldowns, delayed setting updates/acknowledgments, apply/undo, and unconfirmed-action handling. No physical printer settings are changed by the tests.
+
 ## Chamber light
 
 Use **Chamber light** directly below the camera on the overview or printer Monitor tab, or open **Settings → Chamber light**. Click **Turn on** or **Turn off**; changes take effect immediately without saving Settings. The control reads the printer's actual state every two seconds and shows **Updating…** while a change is being confirmed. Disconnected or unsupported printers report their status; U1 controls must be enabled before switching its light.

@@ -139,3 +139,10 @@ export function getHistory(limit = 50, printerId = 'qidi') {
 }
 
 export default db;
+
+export function getDiagnosis(id, printerId = 'qidi') {
+  const row = db.prepare('SELECT * FROM diagnoses WHERE id=? AND printer_id=?').get(id,printerId);
+  if (!row) return null;
+  let parsed = {}; try { parsed = JSON.parse(row.raw_response || '{}'); } catch {}
+  return { ...row, issues: JSON.parse(row.issues || '[]'), printer_context: row.printer_context ? JSON.parse(row.printer_context) : null, summary: parsed?.summary || '' };
+}

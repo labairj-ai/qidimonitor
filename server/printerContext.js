@@ -56,12 +56,14 @@ export async function getPrinterContext(config) {
     const toolheads = objects.filter(n => /^extruder\d*$/.test(n)).map(name => ({ name, active: name === activeExtruder, temperature: status[name]?.temperature, target: status[name]?.target }));
     if (status[activeExtruder]) status.extruder = status[activeExtruder];
     const ctx = {
+      captured_at: Date.now(),
       printer_name: config.name, model: config.model, toolheads, active_extruder: activeExtruder,
       print_state: status.print_stats?.state,
       filename,
       progress_pct: status.display_status?.progress != null ? Math.round(status.display_status.progress * 100) : null,
       print_duration_min: status.print_stats?.print_duration ? Math.round(status.print_stats.print_duration / 60) : null,
       print_duration_sec: status.print_stats?.print_duration ?? null,
+      print_total_duration_sec: status.print_stats?.total_duration ?? null,
       filament_used_mm: status.print_stats?.filament_used ? Math.round(status.print_stats.filament_used) : null,
       nozzle_temp: status.extruder?.temperature != null ? +status.extruder.temperature.toFixed(1) : null,
       nozzle_target: status.extruder?.target,
@@ -78,7 +80,7 @@ export async function getPrinterContext(config) {
       filament_detected: filSensor?.filament_detected,
       layer_height: fileMeta?.layer_height,
       first_layer_height: fileMeta?.first_layer_height,
-      filament_type: fileMeta?.filament_type?.[0] ?? fileMeta?.filament_name?.[0] ?? null,
+      filament_type: (Array.isArray(fileMeta?.filament_type) ? fileMeta.filament_type[0] : fileMeta?.filament_type) || (Array.isArray(fileMeta?.filament_name) ? fileMeta.filament_name[0] : fileMeta?.filament_name) || null,
       slicer: fileMeta?.slicer ? `${fileMeta.slicer}${fileMeta.slicer_version ? ' ' + fileMeta.slicer_version : ''}` : null,
       slicer_nozzle_temp: fileMeta?.first_layer_extr_temp ?? fileMeta?.nozzle_temperature_range_low ?? null,
       slicer_bed_temp: fileMeta?.first_layer_bed_temp ?? null,

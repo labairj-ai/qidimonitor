@@ -1,3 +1,4 @@
+import DiagnosisFixes from './DiagnosisFixes.jsx';
 import { usePrinterApi } from '../printerApi.jsx';
 import React, { useState, useRef, useEffect } from 'react';
 
@@ -207,6 +208,27 @@ export default function DiagnosePanel({ config, onResult, latestResult }) {
   const [error, setError] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
   const fileRef = useRef();
+  const latestRef = useRef(latestResult);
+  const loadingRef = useRef(loading);
+  latestRef.current = latestResult; loadingRef.current = loading;
+  useEffect(() => {
+    let active = true;
+    const refresh = async () => {
+      try {
+        const r = await apiFetch('/api/history?limit=1');
+        if (!r.ok) return;
+        const rows = await r.json();
+        const latest = rows[0];
+        if (!active || loadingRef.current || !latest || (latestRef.current && new Date(latest.timestamp) <= new Date(latestRef.current.timestamp))) return;
+        let parsed = {}; try { parsed = JSON.parse(latest.raw_response || '{}'); } catch {}
+        onResult({ ...latest, summary: parsed?.summary || '' });
+      } catch { /* Keep the current diagnosis when polling is unavailable. */ }
+    };
+    refresh();
+    const timer = setInterval(refresh, 15000);
+    return () => { active = false; clearInterval(timer); };
+  }, [apiFetch, onResult]);
+
 
   const diagnose = async (file) => {
     setLoading(true);
@@ -237,6 +259,7 @@ export default function DiagnosePanel({ config, onResult, latestResult }) {
   return (
     <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ fontWeight: 700, fontSize: 14 }}>AI Diagnosis</div>
+      <p style={{ color: 'var(--muted)', fontSize: 12 }}>Review first · eligible suggestions offer an Apply fix button. Printer controls are never changed automatically.</p>
 
       <div style={{ display: 'flex', gap: 10 }}>
         <button
@@ -305,9 +328,12 @@ export default function DiagnosePanel({ config, onResult, latestResult }) {
             {new Date(result.timestamp).toLocaleString()}
           </div>
 
-          <DiagnosisChat result={result} />
+          {result.id && <DiagnosisFixes key={result.id} result={result} config={config} />}
+          <DiagnosisChat key={result.id || result.timestamp} result={result} />
         </div>
       )}
+
+      <DiagnosisFixes recent config={config} />
 
       {!result && !loading && !error && (
         <div style={{ textAlign: 'center', padding: '24px 0', color: 'var(--muted)', fontSize: 13 }}>

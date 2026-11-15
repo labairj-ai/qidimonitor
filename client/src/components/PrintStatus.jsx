@@ -54,13 +54,15 @@ export default function PrintStatus({ config, onPrinterFound }) {
       setCtx(null);
       setStatus(null);
     }
-  }, [config?.printer_ip, config?.moonraker_url]);
+  }, [config?.printer_ip, config?.moonraker_url, apiFetch]);
 
   useEffect(() => {
     poll();
     const id = setInterval(poll, 5000);
-    return () => clearInterval(id);
-  }, [poll]);
+    const changed = e => { if (e.detail?.printerId === config.id) poll(); };
+    window.addEventListener('printer-controls-changed', changed);
+    return () => { clearInterval(id); window.removeEventListener('printer-controls-changed', changed); };
+  }, [poll, config.id]);
 
   const runDiscovery = async () => {
     setDiscovering(true);

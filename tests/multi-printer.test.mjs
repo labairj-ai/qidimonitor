@@ -68,12 +68,11 @@ test('migration preserves legacy QIDI data, isolates U1 and is repeatable', asyn
 });
 let base;
 test('scoped routes cannot leak targets or enable unverified U1 controls',async()=>{
-  // Reserve an available port, then start the real application against fixture data.
-  const reserve=http.createServer(); await new Promise(r=>reserve.listen(0,'127.0.0.1',r));
-  const port=reserve.address().port; await new Promise(r=>reserve.close(r)); base=`http://127.0.0.1:${port}`;
-  child=spawn(process.execPath,['server/index.js'],{env:{...process.env,PORT:String(port)},stdio:['ignore','pipe','pipe']});
+  // Let the app bind a free port atomically rather than reserving and releasing one.
+  child=spawn(process.execPath,['server/index.js'],{env:{...process.env,PORT:'0'},stdio:['ignore','pipe','pipe']});
   let output=''; child.stdout.on('data',b=>output+=b); child.stderr.on('data',b=>output+=b);
   await new Promise((resolve,reject)=>{let n=0;const timer=setInterval(()=>{if(output.includes('running on port')){clearInterval(timer);resolve();}else if(++n>100 || child.exitCode!==null){clearInterval(timer);reject(new Error(output));}},30);});
+  base=`http://127.0.0.1:${output.match(/running on port (\d+)/)[1]}`;
   const json=async(url,opts)=>{const r=await fetch(base+url,opts);return {status:r.status,data:await r.json()};};
   assert.equal((await json('/api/printers/qidi/slicer/jobs')).data.length,1);
   assert.equal((await json('/api/printers/u1/slicer/jobs')).data.length,0);

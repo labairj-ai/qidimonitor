@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import fixesRouter from './routes/fixes.js';
 import configRouter from './routes/config.js';
 import printerRouter from './routes/printer.js';
 import diagnoseRouter from './routes/diagnose.js';
@@ -19,6 +20,7 @@ app.use(express.json());
 export const api = express.Router();
 api.use('/config', configRouter);
 api.use('/printer', printerRouter);
+api.use('/diagnose', fixesRouter);
 api.use('/', diagnoseRouter);
 api.use('/files', filesRouter);
 api.use('/slicer', slicerRouter);
@@ -40,7 +42,7 @@ app.get('*', (req, res) => {
 
 function listen(retries = 5) {
   const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`qidimonitor running on port ${PORT}`);
+    console.log(`qidimonitor running on port ${server.address().port}`);
     startAutoMonitor();
   });
   server.on('error', (e) => {
