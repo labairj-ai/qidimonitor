@@ -106,6 +106,16 @@ Runtime files, excluded from Git:
 
 The transactional migration assigns old records to `qidi` and creates an unconfigured `u1`. Migration is repeatable and preserves existing QIDI setting values. The November 14 migration preserved 42 diagnoses and two slicing jobs; database integrity passed.
 
+## Chamber light
+
+Use **Chamber light** directly below the camera on the overview or printer Monitor tab, or open **Settings → Chamber light**. Click **Turn on** or **Turn off**; changes take effect immediately without saving Settings. The control reads the printer's actual state every two seconds and shows **Updating…** while a change is being confirmed. Disconnected or unsupported printers report their status; U1 controls must be enabled before switching its light.
+
+The light API (`GET/POST /api/printers/:printerId/printer/light`, POST body `{"on":true}`) detects the explicit `output_pin caselight` object and uses Klipper's `SET_PIN` command. It never guesses fan, heater, or power pins. See [Klipper's command reference](https://www.klipper3d.org/G-Codes.html#set_pin).
+
+Klipper can apply the light command before acknowledging it. The server checks actual pin state while the command is in flight and sends each requested change only once. The UI ignores stale refreshes during a toggle and disables further toggles until confirmation. If confirmation takes longer than twelve seconds, the API returns HTTP 202 with a pending state and the UI continues checking; after thirty more seconds it allows another attempt with an unconfirmed-state message. HTML pages are served without caching so reloads fetch the latest UI.
+
+Verification on November 15, 2026: integration tests passed for delayed command acknowledgments, delayed pin changes, repeated off/on toggles, invalid requests, unsupported printers, and printer isolation. The production build passed. Four consecutive physical-printer toggles confirmed successfully in about 1–1.5 seconds each, restoring the original light state. Visual browser QA was unavailable.
+
 ## API and architecture
 
 Printer-specific endpoints use `/api/printers/:printerId/...` with stable IDs `qidi` and `u1`. `GET /api/printers` lists both configurations; `POST /api/printers/:printerId/test` checks a saved connection. Existing `/api/...` routes remain QIDI-only compatibility aliases. Unknown printer IDs return 404. Selection in one browser does not change another browser's request target.

@@ -28,8 +28,13 @@ app.use('/api/printers/:printerId', printerScope, api);
 app.use('/api', (req, _res, next) => { req.printerId = 'qidi'; next(); }, api);
 
 // Serve React SPA in production
-app.use(express.static(CLIENT_DIST));
+app.use(express.static(CLIENT_DIST, {
+  setHeaders(res, filePath) {
+    if (filePath.endsWith('.html')) res.set('Cache-Control', 'no-store');
+  },
+}));
 app.get('*', (req, res) => {
+  res.set('Cache-Control', 'no-store');
   res.sendFile(path.join(CLIENT_DIST, 'index.html'));
 });
 

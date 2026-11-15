@@ -31,6 +31,71 @@ async function fetchForPrinter(req, urlFn, fetchFn) {
   return fetchFn(url, config);
 }
 
+// Only the explicitly identified chamber-light pin may be controlled here.
+async function chamberLight(base) {
+  const r = await fetch(`${base}/printer/objects/list`, { signal: AbortSignal.timeout(5000) });
+  if (!r.ok) throw new Error(`Moonraker ${r.status}`);
+  const data = await r.json();
+  if (!data.result?.objects?.includes('output_pin caselight')) return { supported: false };
+  const query = await fetch(`${base}/printer/objects/query?output_pin%20caselight&configfile`, { signal: AbortSignal.timeout(5000) });
+  if (!query.ok) throw new Error(`Moonraker ${query.status}`);
+  const status = (await query.json()).result?.status;
+  const value = status?.['output_pin caselight']?.value;
+  const scale = Number(status?.configfile?.config?.['output_pin caselight']?.scale ?? 1);
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isFinite(scale) || scale <= 0) throw new Error('Chamber light state unavailable');
+  return { supported: true, on: value > 0, scale };
+}
+
+router.get('/light', async (req, res) => {
+  const base = moonrakerUrl(getConfig(req.printerId));
+  if (!base) return res.status(400).json({ error: 'Save a printer address first' });
+  try {
+    const { scale, ...state } = await chamberLight(base);
+    res.json(state);
+  } catch (e) { res.status(503).json({ error: e.message }); }
+});
+
+router.post('/light', async (req, res) => {
+  if (typeof req.body.on !== 'boolean') return res.status(400).json({ error: 'on must be a boolean' });
+  const config = getConfig(req.printerId);
+  if (config.model === 'u1' && config.controls_enabled !== '1') return res.status(409).json({ error: 'Enable U1 controls in Settings first.' });
+  const base = moonrakerUrl(config);
+  if (!base) return res.status(400).json({ error: 'Save a printer address first' });
+  try {
+    const state = await chamberLight(base);
+    if (!state.supported) return res.status(409).json({ error: 'This printer does not expose a supported chamber light' });
+    // The G-code acknowledgment can lag the pin itself. Watch actual state
+    // concurrently, rather than waiting for a response that may remain queued.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    let commandError;
+    const command = fetch(`${base}/printer/gcode/script`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ script: `SET_PIN PIN=caselight VALUE=${req.body.on ? state.scale : 0}` }),
+      signal: controller.signal,
+    }).then(async r => {
+      if (!r.ok) throw new Error(`Moonraker ${r.status}: ${await r.text()}`);
+      await r.text();
+    }).catch(e => { commandError = e; });
+    try {
+      const deadline = Date.now() + 12000;
+      do {
+        await new Promise(resolve => setTimeout(resolve, 250));
+        const actual = await chamberLight(base).catch(() => null);
+        if (actual?.supported && actual.on === req.body.on) return res.json({ ok: true, on: actual.on });
+        if (commandError && !['AbortError', 'TimeoutError'].includes(commandError.name)) throw commandError;
+      } while (Date.now() < deadline);
+      return res.status(202).json({ pending: true, requested: req.body.on });
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
+      await command;
+    }
+  } catch (e) {
+    res.status(503).json({ error: ['AbortError', 'TimeoutError'].includes(e.name) ? 'The printer is taking too long to report its light state. Please check the connection.' : e.message });
+  }
+});
+
 // GET /api/printer/status
 router.get('/status', async (req, res) => {
   try {

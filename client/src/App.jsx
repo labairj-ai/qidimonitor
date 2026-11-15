@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import LiveFeed from './components/LiveFeed.jsx';
+import ChamberLight from './components/ChamberLight.jsx';
 import DiagnosePanel from './components/DiagnosePanel.jsx';
 import PrintStatus from './components/PrintStatus.jsx';
 import AutoMonitor from './components/AutoMonitor.jsx';
@@ -18,7 +19,7 @@ function Workspace({ config, reload, setup }) {
     <div className="workspace-heading"><div><h2>{config.name}</h2><p>{ready ? config.printer_ip || config.moonraker_url : 'Ready to set up when your printer arrives'}</p></div>
       <span className="chip">{config.model === 'u1' ? 'Four-toolhead printer' : 'QIDI'}</span></div>
     <nav className="tabs">{['Monitor','Files','Settings'].map(t => <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>{t}</button>)}</nav>
-    {tab === 'Monitor' && (!ready ? <div className="card setup-card"><h3>Your U1 has a place here.</h3><p>Once it arrives, save its local address, test the connection, and configure the camera. QIDI monitoring runs independently.</p><button className="btn-primary" onClick={() => setTab('Settings')}>Set up {config.name}</button></div> : <div className="detail-grid"><div className="stack"><LiveFeed config={config}/><PrintStatus config={config} onPrinterFound={reload}/><AutoMonitor config={config} onConfigChange={reload}/></div><DiagnosePanel config={config} latestResult={lastResult} onResult={setLastResult}/></div>)}
+    {tab === 'Monitor' && (!ready ? <div className="card setup-card"><h3>Your U1 has a place here.</h3><p>Once it arrives, save its local address, test the connection, and configure the camera. QIDI monitoring runs independently.</p><button className="btn-primary" onClick={() => setTab('Settings')}>Set up {config.name}</button></div> : <div className="detail-grid"><div className="stack"><LiveFeed config={config}/><ChamberLight config={config}/><PrintStatus config={config} onPrinterFound={reload}/><AutoMonitor config={config} onConfigChange={reload}/></div><DiagnosePanel config={config} latestResult={lastResult} onResult={setLastResult}/></div>)}
     {tab === 'Files' && <div className="detail-grid"><div>{config.model === 'qidi' ? <Slicer preloadJob={reslice} onFileUploaded={() => { setRefresh(n => n+1); setReslice(null); }}/> : <div className="card setup-card"><h3>Slice for your U1</h3><p>Use Snapmaker Orca with your U1 profile, then upload its G-code here. Built-in U1 slicing will be enabled after its machine and toolhead profiles are verified.</p><p>{config.controls_enabled !== '1' ? 'Uploads and print controls unlock in Settings after you verify this printer.' : 'Uploads and controls are enabled for this printer.'}</p></div>}</div><FileManager printerName={config.name} refreshKey={refresh} onReslice={config.model === 'qidi' ? setReslice : undefined}/></div>}
     {tab === 'Settings' && <Settings config={config} onSave={reload}/>}
   </PrinterContext.Provider>;
@@ -26,7 +27,7 @@ function Workspace({ config, reload, setup }) {
 function PrinterCard({ config, open, reload }) {
   const ready = !!(config.printer_ip || config.moonraker_url);
   return <PrinterContext.Provider value={config.id}><section className="printer-card"><div className="card-heading"><div><span className="eyebrow">{config.model === 'u1' ? 'SNAPMAKER · U1' : 'QIDI · X-PLUS 3'}</span><h2>{config.name}</h2></div><button className="btn-ghost" onClick={open}>{ready ? 'Open printer →' : 'Set up →'}</button></div>
-    {ready ? <div className="stack"><LiveFeed config={config}/><PrintStatus config={config} onPrinterFound={reload}/><AutoMonitor config={config} onConfigChange={reload}/></div> : <div className="card arrival-card"><div className="arrival-icon">＋</div><h3>Ready when it arrives</h3><p>Your U1 workspace is prepared. Add its address and camera to bring it online alongside your QIDI.</p><div className="setup-steps"><span>01 · Connect printer</span><span>02 · Check camera</span><span>03 · Start monitoring</span></div><button className="btn-primary" onClick={open}>Prepare U1 setup</button></div>}</section></PrinterContext.Provider>;
+    {ready ? <div className="stack"><LiveFeed config={config}/><ChamberLight config={config}/><PrintStatus config={config} onPrinterFound={reload}/><AutoMonitor config={config} onConfigChange={reload}/></div> : <div className="card arrival-card"><div className="arrival-icon">＋</div><h3>Ready when it arrives</h3><p>Your U1 workspace is prepared. Add its address and camera to bring it online alongside your QIDI.</p><div className="setup-steps"><span>01 · Connect printer</span><span>02 · Check camera</span><span>03 · Start monitoring</span></div><button className="btn-primary" onClick={open}>Prepare U1 setup</button></div>}</section></PrinterContext.Provider>;
 }
 export default function App() {
   const [printers, setPrinters] = useState([]);

@@ -1,3 +1,4 @@
+import ChamberLight from './ChamberLight.jsx';
 import { usePrinterApi } from '../printerApi.jsx';
 import React, { useState, useEffect } from 'react';
 
@@ -60,6 +61,8 @@ export default function Settings({ config, onSave }) {
   return (
     <div style={{ maxWidth: 600 }}>
       <h2 style={{ fontWeight: 700, fontSize: 16, marginBottom: 20 }}>Settings</h2>
+
+      <ChamberLight config={config}/>
 
       {config?.model === 'u1' && <div className="card setup-card" style={{ marginBottom: 16 }}><h3>U1 arrival checklist</h3><p>Connect the printer to your local network. Save its address below, then test the saved connection. Verify the reported hostname and copy the camera URLs before enabling controls. Monitoring works with controls disabled.</p></div>}
       <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>

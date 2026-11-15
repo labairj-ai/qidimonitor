@@ -22,16 +22,29 @@ const store = await import('../server/db.js');
 const servers = [];
 async function fakePrinter(name, count) {
   const actions = [];
-  const server = http.createServer((req, res) => {
+  const scripts = [];
+  let light = 1;
+  const server = http.createServer(async (req, res) => {
     actions.push(req.url);
-    const objects = ['print_stats','display_status','toolhead','gcode_move','heater_bed','configfile',...Array.from({length:count},(_,i)=>i ? `extruder${i}`:'extruder')];
+    if (req.url === '/printer/gcode/script') {
+      let body = ''; for await (const chunk of req) body += chunk;
+      const script = JSON.parse(body).script; scripts.push(script);
+      const desired = script.endsWith('VALUE=0') ? 0 : 1;
+      setTimeout(() => { light = desired; }, 400);
+    }
+    const objects = ['print_stats','display_status','toolhead','gcode_move','heater_bed','configfile',...(count === 1 ? ['output_pin caselight'] : []),...Array.from({length:count},(_,i)=>i ? `extruder${i}`:'extruder')];
     const status = { print_stats: {state:'printing', filename: `${name}.gcode`}, toolhead:{extruder:count===4?'extruder2':'extruder'}, configfile:{config:{}}, heater_bed:{temperature:60,target:60} };
+    if (count === 1) status['output_pin caselight'] = {value:light};
     for(let i=0;i<count;i++) status[i?`extruder${i}`:'extruder']={temperature:200+i,target:210};
     let result = req.url === '/printer/objects/list' ? {objects} : req.url === '/printer/info' ? {hostname:name,state:'ready'} : req.url === '/server/webcams/list' ? {webcams:[{name:'Built-in',stream_url:'/camera',snapshot_url:'/snapshot'}]} : {status};
-    res.setHeader('Content-Type','application/json'); res.end(JSON.stringify({result}));
+    res.setHeader('Content-Type','application/json');
+    // Apply the pin immediately, but simulate Klipper delaying its acknowledgment.
+    if (req.url === '/printer/gcode/script' && light === 0) {
+      setTimeout(() => res.end(JSON.stringify({result})), 5500);
+    } else res.end(JSON.stringify({result}));
   });
   await new Promise(r=>server.listen(0,'127.0.0.1',r)); servers.push(server);
-  return {url:`http://127.0.0.1:${server.address().port}`, actions};
+  return {url:`http://127.0.0.1:${server.address().port}`, actions, scripts};
 }
 const qidi=await fakePrinter('qidi-device',1), u1=await fakePrinter('u1-device',4);
 let child;
@@ -69,6 +82,22 @@ test('scoped routes cannot leak targets or enable unverified U1 controls',async(
   const [a,b]=await Promise.all([json('/api/printers/qidi/printer/status'),json('/api/printers/u1/printer/status')]);
   assert.equal(a.data.print_stats.filename,'qidi-device.gcode'); assert.equal(b.data.print_stats.filename,'u1-device.gcode');
   assert.equal((await json('/api/printers/missing/config')).status,404);
+  const lightOptions = on => ({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on})});
+  assert.deepEqual((await json('/api/printers/qidi/printer/light')).data,{supported:true,on:true});
+  assert.deepEqual((await json('/api/printers/u1/printer/light')).data,{supported:false});
+  assert.equal((await json('/api/printers/qidi/printer/light',lightOptions('false'))).status,400);
+  assert.equal((await json('/api/printers/u1/printer/light',lightOptions(false))).status,409);
+  assert.equal((await json('/api/printers/qidi/printer/light',lightOptions(false))).status,200);
+  assert.equal((await json('/api/printers/qidi/printer/light')).data.on,false);
+  assert.equal((await json('/api/printers/qidi/printer/light',lightOptions(true))).status,200);
+  assert.deepEqual(qidi.scripts,['SET_PIN PIN=caselight VALUE=0','SET_PIN PIN=caselight VALUE=1']);
+  for (const on of [false,true,false,true]) {
+    const result = await json('/api/printers/qidi/printer/light',lightOptions(on));
+    assert.equal(result.status,200); assert.equal(result.data.on,on);
+    assert.equal((await json('/api/printers/qidi/printer/light')).data.on,on);
+  }
+  assert.deepEqual(u1.scripts,[]);
+
   assert.equal((await json('/api/printers/u1/files/print/pause',{method:'POST'})).status,409);
   assert.equal(u1.actions.filter(x=>x==='/printer/print/pause').length,0);
   assert.equal((await json('/api/printers/u1/slicer/slice',{method:'POST'})).status,409);
@@ -83,6 +112,8 @@ test('scoped routes cannot leak targets or enable unverified U1 controls',async(
   const check=await json('/api/printers/u1/test',{method:'POST'});assert.equal(check.data.hostname,'u1-device');assert.equal(check.data.webcams.length,1);assert.equal(check.data.webcams[0].stream_url,u1.url+'/camera');
   assert.deepEqual((await json('/api/printers/u1/config')).data,before);
   assert.equal((await json('/api/printers/u1/config',{...opts,body:JSON.stringify({controls_enabled:'1'})})).status,200);
+  assert.equal((await json('/api/printers/u1/printer/light',lightOptions(true))).status,409);
+  assert.deepEqual(u1.scripts,[]);
   assert.equal((await json('/api/printers/u1/files/print/pause',{method:'POST'})).status,200);
   assert.ok(u1.actions.includes('/printer/print/pause'));
   assert.ok(!qidi.actions.includes('/printer/print/pause'));
