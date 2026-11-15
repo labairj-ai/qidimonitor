@@ -1,0 +1,237 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+import { spawn } from 'node:child_process';
+import { buildFixes, validAdjustment, validateFixContext, fixCommand, FIX_TTL_MS } from '../server/diagnosisFixes.js';
+
+const baseline = () => ({model:'qidi', print_state:'printing', filename:'part.gcode', active_extruder:'extruder', print_duration_sec:100, print_total_duration_sec:100, captured_at:Date.now(), speed_factor_pct:100, flow_pct:100, fan_pct:60, filament_type:'PLA', z_mm:2, first_layer_height:0.2});
+const parsed = (control='speed', value=90, category='ghosting') => ({ overall_severity:'warning', issues:[{category,severity:'moderate',description:'Visible ripples beside the edge',suggestion:'Try a small adjustment'}], control_suggestions:[{control,value,issue_category:category,reason:'Visible ringing suggests trying a modest speed reduction.'}] });
+const options = () => ({printerId:'qidi',diagnosisId:1});
+
+test('proposals require reliable live data and bounded structured recommendations',()=>{
+  assert.equal(buildFixes(parsed(),baseline(),options()).length,1);
+  for(const p of [null, {}, {...parsed(),overall_severity:'critical'}, {...parsed(),control_suggestions:[{control:'speed',value:'90',issue_category:'ghosting',reason:'test'}]}, parsed('speed',200), parsed('temperature',210), {...parsed(),control_suggestions:[]}, {...parsed(),issues:[{category:'spaghetti',severity:'severe'}]}]) assert.deepEqual(buildFixes(p,baseline(),options()),[]);
+  for(const ctx of [null,{...baseline(),model:'u1'},{...baseline(),print_state:'paused'},{...baseline(),filename:null},{...baseline(),speed_factor_pct:null}]) assert.deepEqual(buildFixes(parsed(),ctx,options()),[]);
+  assert.deepEqual(buildFixes(parsed(),baseline(),{...options(),uploaded:true}),[]);
+  assert.deepEqual(buildFixes(parsed('speed',95,'over_extrusion'),baseline(),options()),[]);
+  assert.equal(buildFixes(parsed('flow',102,'under_extrusion'),baseline(),options()).length,1);
+  assert.equal(buildFixes(parsed('flow',98,'over_extrusion'),baseline(),options()).length,1);
+  assert.deepEqual(buildFixes(parsed('flow',98,'under_extrusion'),baseline(),options()),[]);
+  assert.deepEqual(buildFixes(parsed('flow',102,'under_extrusion'),{...baseline(),filament_type:null},options()),[]);
+  assert.equal(buildFixes(parsed('fan',70,'stringing'),baseline(),options()).length,1);
+  assert.deepEqual(buildFixes(parsed('fan',70,'stringing'),{...baseline(),z_mm:0.2},options()),[]);
+  assert.deepEqual(buildFixes(parsed('fan',70,'stringing'),{...baseline(),filament_type:'ABS'},options()),[]);
+  assert.equal(validAdjustment('flow',107,105,baseline(),'over_extrusion'),false);
+  assert.throws(()=>fixCommand('speed','90\nM112'));
+  assert.throws(()=>fixCommand('heater',250));
+});
+
+test('nozzle fixes respect material, direction, heater limits and settled telemetry',()=>{
+  const ctx={...baseline(),filament_type:'PETG',nozzle_target:250,nozzle_temp:250.2,printer_config:{nozzle_min_temp:0,nozzle_max_temp:300,min_extrude_temp:170}};
+  const p=parsed('nozzle',240,'stringing');
+  const fix=buildFixes(p,ctx,options())[0];assert.ok(fix);assert.equal(fix.before,250);assert.equal(fix.after,240);
+  for(const c of [{...ctx,filament_type:null},{...ctx,nozzle_temp:null},{...ctx,nozzle_temp:230},{...ctx,active_extruder:'extruder;M112'},{...ctx,printer_config:{}},{...ctx,printer_config:{...ctx.printer_config,nozzle_max_temp:242}}]) assert.deepEqual(buildFixes(p,c,options()),[]);
+  for(const value of [0,230,249,260,'240']) assert.deepEqual(buildFixes(parsed('nozzle',value,'stringing'),ctx,options()),[]);
+  assert.equal(buildFixes(parsed('nozzle',240,'under_extrusion'),ctx,options()).length,0);
+  assert.equal(buildFixes(parsed('nozzle',240,'under_extrusion'),{...ctx,nozzle_target:235,nozzle_temp:235},options()).length,1);
+  assert.throws(()=>validateFixContext(fix,{...ctx,nozzle_target:245}));
+  assert.throws(()=>validateFixContext(fix,{...ctx,nozzle_temp:230}));
+  assert.doesNotThrow(()=>validateFixContext(fix,{...ctx,nozzle_target:240,nozzle_temp:240},{undo:true,appliedAt:Date.now()}));
+  assert.throws(()=>fixCommand('nozzle',240,'heater_bed'));
+  assert.throws(()=>fixCommand('nozzle',240,'extruder\nM112'));
+  assert.throws(()=>fixCommand('nozzle',0,'extruder'));
+});
+
+test('freshness, print identity and changed controls are rechecked before apply and undo',()=>{
+  const now=Date.now(); const fix=buildFixes(parsed(),baseline(),{...options(),now})[0];
+  assert.doesNotThrow(()=>validateFixContext(fix,baseline(),{now}));
+  for(const ctx of [{...baseline(),print_state:'complete'},{...baseline(),filename:'other.gcode'},{...baseline(),active_extruder:'extruder1'},{...baseline(),filament_type:'ABS'},{...baseline(),speed_factor_pct:95},{...baseline(),print_duration_sec:2},{...baseline(),print_duration_sec:500}]) assert.throws(()=>validateFixContext(fix,ctx,{now}));
+  assert.throws(()=>validateFixContext(fix,baseline(),{now:now+FIX_TTL_MS+1}));
+  assert.doesNotThrow(()=>validateFixContext(fix,{...baseline(),speed_factor_pct:90},{undo:true,appliedAt:now,now:now+100}));
+  assert.throws(()=>validateFixContext(fix,{...baseline(),speed_factor_pct:85},{undo:true,appliedAt:now,now:now+100}));
+});
+
+const dir=mkdtempSync(path.join(tmpdir(),'qidi-fix-test-'));
+process.env.DB_PATH=path.join(dir,'test.db');
+process.env.SNAPSHOTS_DIR=path.join(dir,'snapshots');
+process.env.STLS_DIR=path.join(dir,'stls');
+const store=await import('../server/db.js');
+const fixStore=await import('../server/fixStore.js');
+let speed=100, flow=100, fan=60, filename='part.gcode', printState='printing', recommendation=parsed();
+let nozzleTarget=205, nozzleActual=205, material='PLA';
+const scripts=[];
+let commandMode='normal';
+const fake=http.createServer(async(req,res)=>{
+  res.setHeader('Content-Type','application/json');
+  const status={ print_stats:{state:printState,filename,print_duration:100,total_duration:100},toolhead:{extruder:'extruder'},gcode_move:{speed_factor:speed/100,extrude_factor:flow/100},extruder:{temperature:nozzleActual,target:nozzleTarget},heater_bed:{temperature:60,target:60},'output_pin fan0':{value:fan/100},motion_report:{live_position:[0,0,2]},configfile:{config:{extruder:{nozzle_diameter:0.4,min_temp:0,max_temp:300,min_extrude_temp:170}}}};
+  if(req.url==='/api/generate') { for await(const _ of req) {} return res.end(JSON.stringify({response:JSON.stringify(recommendation)})); }
+  if(req.url==='/snapshot') { res.setHeader('Content-Type','image/jpeg'); return res.end(Buffer.from([255,216,255,217])); }
+  if(req.url==='/printer/objects/list') return res.end(JSON.stringify({result:{objects:Object.keys(status)}}));
+  if(req.url.startsWith('/printer/objects/query')) return res.end(JSON.stringify({result:{status}}));
+  if(req.url.startsWith('/server/files/metadata')) return res.end(JSON.stringify({result:{filament_type:material,first_layer_height:0.2}}));
+  if(req.url==='/printer/gcode/script') {
+    let body='';for await(const chunk of req) body+=chunk;
+    const script=JSON.parse(body).script; scripts.push(script);
+    if(commandMode==='reject') { res.statusCode=500; return res.end('{}'); }
+    setTimeout(()=>{
+      if(script.startsWith('SET_HEATER_TEMPERATURE HEATER=extruder TARGET=')) nozzleTarget=Number(script.split('TARGET=')[1]);
+      if(script.startsWith('M220 S')) speed=Number(script.slice(6));
+      if(script.startsWith('M221 S')) flow=Number(script.slice(6));
+      if(script.startsWith('M106 S')) fan=Math.round(Number(script.slice(6))*100/255);
+    },600);
+    // State changes before the acknowledgment, as on the physical printer.
+    return setTimeout(()=>res.end(JSON.stringify({result:'ok'})),2500);
+  }
+  res.statusCode=404;res.end('{}');
+});
+await new Promise(r=>fake.listen(0,'127.0.0.1',r));
+const device=`http://127.0.0.1:${fake.address().port}`;
+store.setConfig({moonraker_url:device,camera_url:device+'/snapshot',ollama_url:device,auto_enabled:'0'},'qidi');
+let child,base;
+const json=async(url,opts)=>{const r=await fetch(base+url,opts);return {status:r.status,data:await r.json()};};
+const post={method:'POST'};
+const diagnose=async()=>{const r=await json('/api/printers/qidi/diagnose',post);assert.equal(r.status,200,JSON.stringify(r));return r.data;};
+
+test('reviewed fix API applies once, verifies delayed changes, logs and undoes without trusting client commands',async()=>{
+  child=spawn(process.execPath,['server/index.js'],{env:{...process.env,PORT:'0'},stdio:['ignore','pipe','pipe']});
+  let output='';child.stdout.on('data',b=>output+=b);child.stderr.on('data',b=>output+=b);
+  await new Promise((resolve,reject)=>{let n=0;const t=setInterval(()=>{if(output.includes('running on port')){clearInterval(t);resolve();}else if(++n>100||child.exitCode!==null){clearInterval(t);reject(new Error(output));}},30);});
+  base=`http://127.0.0.1:${output.match(/running on port (\d+)/)[1]}`;
+  const diagnosis=await diagnose();assert.ok(diagnosis.id);assert.equal(diagnosis.fixes.length,1);
+  assert.equal(diagnosis.printer_context.filament_type,'PLA');
+  let review=await json(`/api/printers/qidi/diagnose/${diagnosis.id}/fixes`);const fix=review.data.fixes[0];assert.equal(fix.before,100);assert.equal(fix.after,90);
+  assert.equal((await json(`/api/printers/u1/diagnose/${diagnosis.id}/fixes`)).status,404);
+  assert.equal((await json(`/api/printers/u1/diagnose/fixes/${fix.id}/apply`,post)).status,404);
+  const request={...post,headers:{'Content-Type':'application/json'},body:JSON.stringify({script:'M112',value:999})};
+  const results=await Promise.all([json(`/api/printers/qidi/diagnose/fixes/${fix.id}/apply`,request),json(`/api/printers/qidi/diagnose/fixes/${fix.id}/apply`,request)]);
+  assert.deepEqual(results.map(r=>r.status).sort(),[200,409]);assert.deepEqual(scripts,['M220 S90']);assert.equal(speed,90);
+  review=await json(`/api/printers/qidi/diagnose/${diagnosis.id}/fixes`);assert.equal(review.data.fixes[0].state,'applied');assert.equal(review.data.events.length,2);
+  const recent = await json('/api/printers/qidi/diagnose/fixes/recent'); assert.equal(recent.data.fixes[0].id,fix.id);
+  assert.deepEqual((await json('/api/printers/u1/diagnose/fixes/recent')).data.fixes,[]);
+  assert.equal((await json(`/api/printers/qidi/diagnose/fixes/${fix.id}/apply`,post)).status,409);
+  assert.equal((await json(`/api/printers/qidi/diagnose/fixes/${fix.id}/undo`,post)).status,200);assert.equal(speed,100);assert.deepEqual(scripts,['M220 S90','M220 S100']);
+  assert.equal((await json(`/api/printers/qidi/diagnose/fixes/${fix.id}/undo`,post)).status,409);
+  // Uploaded photos remain advice only, even if the model proposes a live change.
+  const form=new FormData();form.append('image',new Blob([new Uint8Array([255,216,255,217])],{type:'image/jpeg'}),'test.jpg');
+  const uploaded=await json('/api/printers/qidi/diagnose',{method:'POST',body:form});assert.equal(uploaded.status,200);assert.deepEqual(uploaded.data.fixes,[]);
+});
+
+test('stale or changed-print fixes send nothing; cooldown is enforced across diagnoses',async()=>{
+  // Independent print scenario: retain cooldown events but retire prior applied/undone fixtures.
+  store.default.prepare("UPDATE diagnosis_fixes SET state='dismissed' WHERE state IN ('applied','undone')").run();
+  const d=await diagnose();const fix=d.fixes[0];const count=scripts.length;
+  store.setConfig({moonraker_url:device+'/'},'qidi');
+  assert.equal((await json(`/api/printers/qidi/diagnose/fixes/${fix.id}/apply`,post)).status,409);
+  store.setConfig({moonraker_url:device},'qidi');
+  filename='different.gcode';assert.equal((await json(`/api/printers/qidi/diagnose/fixes/${fix.id}/apply`,post)).status,409);filename='part.gcode';
+  speed=95;assert.equal((await json(`/api/printers/qidi/diagnose/fixes/${fix.id}/apply`,post)).status,409);speed=100;
+  assert.equal((await json(`/api/printers/qidi/diagnose/fixes/${fix.id}/apply`,post)).status,409); // cooldown
+  const expired=buildFixes(parsed(),baseline(),{...options(),diagnosisId:d.id,now:Date.now()-FIX_TTL_MS-1})[0];fixStore.saveFixes([expired]);
+  assert.equal((await json(`/api/printers/qidi/diagnose/fixes/${expired.id}/apply`,post)).status,409);
+  assert.equal(scripts.length,count);
+  recommendation=parsed('speed',190);assert.deepEqual((await diagnose()).fixes,[]);
+  recommendation={...parsed(),issues:[{category:'spaghetti',severity:'severe',description:'Loose strands',suggestion:'Inspect the print'}]};assert.deepEqual((await diagnose()).fixes,[]);
+  recommendation=parsed();
+});
+
+test('uncertain changes cannot be replayed and acknowledgement sends no command',async()=>{
+  // Clear only this disposable fixture's events to exercise the uncertainty path without waiting for cooldown.
+  store.default.prepare('DELETE FROM diagnosis_fix_events').run();
+  const d=await diagnose();const fix=d.fixes[0];const count=scripts.length;commandMode='reject';
+  const result=await json(`/api/printers/qidi/diagnose/fixes/${fix.id}/apply`,post);assert.equal(result.status,202);assert.equal(result.data.fix.state,'unconfirmed');
+  assert.equal(scripts.length,count+1);
+  assert.equal((await json(`/api/printers/qidi/diagnose/fixes/${fix.id}/apply`,post)).status,409);assert.equal(scripts.length,count+1);
+  assert.equal((await json(`/api/printers/qidi/diagnose/fixes/${fix.id}/dismiss`,post)).status,200);assert.equal(scripts.length,count+1);
+  assert.equal((await json(`/api/printers/qidi/diagnose/fixes/${fix.id}/undo`,post)).status,409);
+});
+
+test('nozzle Apply and Undo verify targets without waiting for actual temperature to catch up',async()=>{
+  store.default.prepare('DELETE FROM diagnosis_fix_events').run();
+  commandMode='normal';material='PETG';nozzleTarget=250;nozzleActual=250.2;
+  recommendation=parsed('nozzle',240,'stringing');
+  const d=await diagnose();assert.equal(d.fixes.length,1);const fix=d.fixes[0];const count=scripts.length;
+  const result=await json(`/api/printers/qidi/diagnose/fixes/${fix.id}/apply`,post);
+  assert.equal(result.status,200);assert.equal(result.data.observed,240);assert.equal(nozzleTarget,240);assert.equal(nozzleActual,250.2);
+  assert.equal(scripts[count],'SET_HEATER_TEMPERATURE HEATER=extruder TARGET=240');
+  nozzleTarget=245;
+  assert.equal((await json(`/api/printers/qidi/diagnose/fixes/${fix.id}/undo`,post)).status,409);assert.equal(scripts.length,count+1);
+  nozzleTarget=240;
+  const undo=await json(`/api/printers/qidi/diagnose/fixes/${fix.id}/undo`,post);assert.equal(undo.status,200);assert.equal(nozzleTarget,250);
+  assert.equal(scripts[count+1],'SET_HEATER_TEMPERATURE HEATER=extruder TARGET=250');
+});
+
+test('manual nozzle entry rejects stale/invalid targets and applies while printing or paused',async()=>{
+  const count=scripts.length;
+  const opts=(target,extra={})=>({method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target,expected_target:nozzleTarget,extruder:'extruder',filename,...extra})});
+  for(const target of [0,999,'240',240.5]) assert.equal((await json('/api/printers/qidi/printer/nozzle',opts(target))).status,400);
+  assert.equal((await json('/api/printers/qidi/printer/nozzle',opts(240,{expected_target:200}))).status,409);
+  assert.equal((await json('/api/printers/qidi/printer/nozzle',opts(240,{filename:'other.gcode'}))).status,409);
+  assert.equal((await json('/api/printers/u1/printer/nozzle',opts(240))).status,409);
+  assert.equal(scripts.length,count);
+  const applied=await json('/api/printers/qidi/printer/nozzle',opts(240));assert.equal(applied.status,200);assert.equal(applied.data.observed,240);assert.equal(nozzleTarget,240);
+  printState='paused';
+  const paused=await json('/api/printers/qidi/printer/nozzle',opts(245));assert.equal(paused.status,200);assert.equal(nozzleTarget,245);
+  printState='complete';
+  assert.equal((await json('/api/printers/qidi/printer/nozzle',opts(250))).status,409);
+  assert.deepEqual(scripts.slice(count),['SET_HEATER_TEMPERATURE HEATER=extruder TARGET=240','SET_HEATER_TEMPERATURE HEATER=extruder TARGET=245']);
+});
+
+test('automatic monitoring API reports state, saves enable/disable and rejects incomplete setup',async()=>{
+  const put=body=>({method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  assert.equal((await json('/api/printers/qidi/monitor')).data.enabled,false);
+  assert.equal((await json('/api/printers/qidi/monitor/check',post)).status,409);
+  assert.equal((await json('/api/printers/qidi/config',put({auto_interval_min:'1',auto_enabled:'1'}))).status,200);
+  await new Promise(r=>setTimeout(r,30));
+  const status=await json('/api/printers/qidi/monitor');assert.equal(status.data.enabled,true);assert.equal(status.data.interval_minutes,1);assert.equal(status.data.phase,'waiting_for_print');
+  assert.equal((await json('/api/printers/qidi/monitor/check',post)).status,202);
+  assert.equal((await json('/api/printers/qidi/config',put({auto_enabled:'0'}))).status,200);
+  assert.equal((await json('/api/printers/qidi/monitor')).data.enabled,false);
+  assert.equal((await json('/api/printers/u1/config',put({auto_enabled:'1'}))).status,409);
+  assert.equal((await json('/api/printers/u1/monitor')).data.enabled,false);
+  assert.equal((await json('/api/printers/qidi/config',put({auto_interval_min:'0'}))).status,400);
+});
+
+test('only opted-in nozzle/flow recommendations auto-apply; old defects cannot trigger repeats',async()=>{
+  store.default.prepare("UPDATE diagnosis_fixes SET state='dismissed'").run();store.default.prepare('DELETE FROM diagnosis_fix_events').run();
+  printState='printing';material='PETG';flow=100;nozzleTarget=240;nozzleActual=240;commandMode='normal';
+  store.setConfig({auto_enabled:'0',auto_nozzle_enabled:'1',auto_flow_enabled:'1'},'qidi');
+  recommendation=parsed('flow',98,'over_extrusion');const count=scripts.length;
+  const first=await diagnose();assert.equal(first.auto_actions[0].confirmed,true);assert.equal(flow,98);assert.equal(scripts[count],'M221 S98');
+  const saved=(await json(`/api/printers/qidi/diagnose/${first.id}/fixes`)).data.fixes[0];assert.equal(saved.applied_automatically,true);
+  const again=await diagnose();assert.equal(again.fixes.length,0);assert.equal(again.issues.length,0);assert.ok(again.followup.categories.includes('over_extrusion'));assert.equal(scripts.length,count+1);
+  const undo=await json(`/api/printers/qidi/diagnose/fixes/${saved.id}/undo`,post);assert.equal(undo.status,200);assert.equal(flow,100);assert.equal(store.getConfig('qidi').auto_flow_enabled,'0');
+  recommendation=parsed();const speed=await diagnose();assert.equal(speed.fixes.length,1);assert.deepEqual(speed.auto_actions,[]);
+  // Nozzle auto-application uses the same target verification and starts settling memory.
+  store.default.prepare("UPDATE diagnosis_fixes SET state='dismissed'").run();store.default.prepare('DELETE FROM diagnosis_fix_events').run();
+  store.setConfig({auto_nozzle_enabled:'1'},'qidi');nozzleTarget=250;nozzleActual=250.2;recommendation=parsed('nozzle',240,'stringing');
+  const temp=await diagnose();assert.equal(temp.auto_actions[0].confirmed,true);assert.equal(nozzleTarget,240);
+  const tempFix=(await json(`/api/printers/qidi/diagnose/${temp.id}/fixes`)).data.fixes[0];assert.equal(tempFix.applied_automatically,true);
+  const warming=await diagnose();assert.equal(warming.fixes.length,0);assert.equal(warming.issues.length,0);
+  assert.equal((await json(`/api/printers/qidi/diagnose/fixes/${tempFix.id}/undo`,post)).status,200);assert.equal(nozzleTarget,250);assert.equal(store.getConfig('qidi').auto_nozzle_enabled,'0');
+  nozzleTarget=240;nozzleActual=240;
+  // An uncertain automatic command disables its control and is never resent.
+  store.default.prepare("UPDATE diagnosis_fixes SET state='dismissed'").run();store.default.prepare('DELETE FROM diagnosis_fix_events').run();
+  store.setConfig({auto_flow_enabled:'1'},'qidi');recommendation=parsed('flow',98,'over_extrusion');commandMode='reject';
+  const failed=await diagnose();assert.equal(failed.auto_actions[0].confirmed,false);assert.equal(store.getConfig('qidi').auto_flow_enabled,'0');
+  const countAfter=scripts.length;await diagnose();assert.equal(scripts.length,countAfter);
+  const u1=await json('/api/printers/u1/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({auto_flow_enabled:'1'})});assert.equal(u1.status,409);
+});
+
+test('disabling scheduled monitoring prevents automatic setting changes from a pending scheduled result',async()=>{
+  store.default.prepare("UPDATE diagnosis_fixes SET state='dismissed'").run();store.default.prepare('DELETE FROM diagnosis_fix_events').run();
+  store.setConfig({auto_enabled:'0',auto_flow_enabled:'0',auto_nozzle_enabled:'0'},'qidi');
+  flow=100;commandMode='normal';recommendation=parsed('flow',98,'over_extrusion');
+  const d=await diagnose();const fix=d.fixes[0];assert.ok(fix);const count=scripts.length;
+  store.setConfig({auto_flow_enabled:'1'},'qidi');
+  const {applySavedFix}=await import('../server/fixService.js');
+  await assert.rejects(()=>applySavedFix(fix.id,'qidi',{automatic:true,scheduled:true}),/monitoring was disabled/);
+  assert.equal(scripts.length,count);
+  store.setConfig({auto_flow_enabled:'0'},'qidi');
+});
+
+test.after(async()=>{
+  child?.kill();await new Promise(r=>fake.close(r));store.default.close();rmSync(dir,{recursive:true,force:true});
+});

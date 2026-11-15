@@ -1,3 +1,5 @@
+import DiagnosisFixes from './DiagnosisFixes.jsx';
+import { usePrinterApi } from '../printerApi.jsx';
 import React, { useState, useRef, useEffect } from 'react';
 
 const SEVERITY_COLORS = { ok: 'var(--ok)', warning: 'var(--warn)', critical: 'var(--crit)' };
@@ -39,6 +41,7 @@ function ChatBubble({ msg }) {
 }
 
 function DiagnosisChat({ result }) {
+  const { apiFetch } = usePrinterApi();
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -60,7 +63,7 @@ function DiagnosisChat({ result }) {
     setMessages([...updated, { role: 'assistant', content: '' }]);
     setLoading(true);
     try {
-      const r = await fetch('/api/diagnose/chat', {
+      const r = await apiFetch('/api/diagnose/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -70,6 +73,7 @@ function DiagnosisChat({ result }) {
             summary: result.summary,
             issues: result.issues,
             printer_context: result.printer_context,
+            followup:result.followup,
             print_file: result.print_file,
           },
         }),
@@ -200,10 +204,32 @@ function DiagnosisChat({ result }) {
 }
 
 export default function DiagnosePanel({ config, onResult, latestResult }) {
+  const { apiFetch } = usePrinterApi();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
   const fileRef = useRef();
+  const latestRef = useRef(latestResult);
+  const loadingRef = useRef(loading);
+  latestRef.current = latestResult; loadingRef.current = loading;
+  useEffect(() => {
+    let active = true;
+    const refresh = async () => {
+      try {
+        const r = await apiFetch('/api/history?limit=1');
+        if (!r.ok) return;
+        const rows = await r.json();
+        const latest = rows[0];
+        if (!active || loadingRef.current || !latest || (latestRef.current && new Date(latest.timestamp) <= new Date(latestRef.current.timestamp))) return;
+        let parsed = {}; try { parsed = JSON.parse(latest.raw_response || '{}'); } catch {}
+        onResult({ ...latest, summary: parsed?.summary || '' });
+      } catch { /* Keep the current diagnosis when polling is unavailable. */ }
+    };
+    refresh();
+    const timer = setInterval(refresh, 15000);
+    return () => { active = false; clearInterval(timer); };
+  }, [apiFetch, onResult]);
+
 
   const diagnose = async (file) => {
     setLoading(true);
@@ -211,7 +237,7 @@ export default function DiagnosePanel({ config, onResult, latestResult }) {
     try {
       const fd = new FormData();
       if (file) fd.append('image', file);
-      const r = await fetch('/api/diagnose', { method: 'POST', body: fd });
+      const r = await apiFetch('/api/diagnose', { method: 'POST', body: fd });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || 'Diagnosis failed');
       onResult(data);
@@ -234,6 +260,7 @@ export default function DiagnosePanel({ config, onResult, latestResult }) {
   return (
     <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ fontWeight: 700, fontSize: 14 }}>AI Diagnosis</div>
+      <p style={{ color: 'var(--muted)', fontSize: 12 }}>Nozzle and flow fixes can auto-apply when enabled in Automatic monitoring. Speed and fan changes require Apply fix.</p>
 
       <div style={{ display: 'flex', gap: 10 }}>
         <button
@@ -265,14 +292,15 @@ export default function DiagnosePanel({ config, onResult, latestResult }) {
       {result && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontWeight: 700, fontSize: 16, color: SEVERITY_COLORS[result.overall_severity] }}>
-              {result.overall_severity === 'ok' ? 'Print looks good' :
+            <span style={{ fontWeight: 700, fontSize: 16, color: result.followup && !result.issues?.length ? 'var(--muted)' : SEVERITY_COLORS[result.overall_severity] }}>
+              {result.followup && !result.issues?.length ? 'Follow-up: no confirmed new issues' : result.overall_severity === 'ok' ? 'Print looks good' :
                result.overall_severity === 'warning' ? 'Issues detected' : 'Critical issues'}
             </span>
-            <SeverityChip sev={result.overall_severity} />
+            {!(result.followup && !result.issues?.length) && <SeverityChip sev={result.overall_severity} />}
           </div>
 
-          {result.summary && (
+          {result.followup && <div className="card" style={{fontSize:13}}><strong>Follow-up after correction</strong><p>{result.followup.note}</p><p style={{color:'var(--muted)',marginTop:6}}>Previously corrected: {result.followup.categories.map(c=>ISSUE_LABELS[c] || c).join(', ')}. Existing marks are excluded from new-issue findings.</p></div>}
+          {result.summary && (!result.followup || result.issues?.length > 0) && (
             <p style={{ fontSize: 13, color: 'var(--muted)' }}>{result.summary}</p>
           )}
 
@@ -302,9 +330,12 @@ export default function DiagnosePanel({ config, onResult, latestResult }) {
             {new Date(result.timestamp).toLocaleString()}
           </div>
 
-          <DiagnosisChat result={result} />
+          {result.id && <DiagnosisFixes key={result.id} result={result} config={config} />}
+          <DiagnosisChat key={result.id || result.timestamp} result={result} />
         </div>
       )}
+
+      <DiagnosisFixes recent config={config} />
 
       {!result && !loading && !error && (
         <div style={{ textAlign: 'center', padding: '24px 0', color: 'var(--muted)', fontSize: 13 }}>

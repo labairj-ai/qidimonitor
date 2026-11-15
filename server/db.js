@@ -46,24 +46,24 @@ db.exec(`
 
 export function insertSlicerJob(job) {
   db.prepare(`
-    INSERT OR REPLACE INTO slicer_jobs (id, stl_name, stl_path, gcode_name, settings, created_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(job.id, job.stl_name, job.stl_path, job.gcode_name, JSON.stringify(job.settings), job.created_at);
+    INSERT OR REPLACE INTO slicer_jobs (id, stl_name, stl_path, gcode_name, settings, created_at, printer_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(job.id, job.stl_name, job.stl_path, job.gcode_name, JSON.stringify(job.settings), job.created_at, job.printer_id || 'qidi');
 }
 
-export function getSlicerJobs() {
-  return db.prepare('SELECT * FROM slicer_jobs ORDER BY created_at DESC').all().map(r => ({
+export function getSlicerJobs(printerId = 'qidi') {
+  return db.prepare('SELECT * FROM slicer_jobs WHERE printer_id=? ORDER BY created_at DESC').all(printerId).map(r => ({
     ...r, settings: JSON.parse(r.settings),
   }));
 }
 
-export function getSlicerJob(id) {
-  const r = db.prepare('SELECT * FROM slicer_jobs WHERE id = ?').get(id);
+export function getSlicerJob(id, printerId = 'qidi') {
+  const r = db.prepare('SELECT * FROM slicer_jobs WHERE id = ? AND printer_id=?').get(id, printerId);
   return r ? { ...r, settings: JSON.parse(r.settings) } : null;
 }
 
-export function deleteSlicerJob(id) {
-  db.prepare('DELETE FROM slicer_jobs WHERE id = ?').run(id);
+export function deleteSlicerJob(id, printerId = 'qidi') {
+  db.prepare('DELETE FROM slicer_jobs WHERE id = ? AND printer_id=?').run(id, printerId);
 }
 
 // Seed defaults
@@ -84,28 +84,38 @@ for (const [k, v] of Object.entries(defaults)) {
   upsertDefault.run(k, v);
 }
 
-// Backfill printer_ip if still empty
-const currentIp = db.prepare("SELECT value FROM config WHERE key = 'printer_ip'").get();
-if (!currentIp?.value) {
-  db.prepare("UPDATE config SET value = '192.168.4.41' WHERE key = 'printer_ip'").run();
-}
-
-export function getConfig() {
-  const rows = db.prepare('SELECT key, value FROM config').all();
-  return Object.fromEntries(rows.map(r => [r.key, r.value]));
-}
-
-export function setConfig(updates) {
-  const stmt = db.prepare('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)');
-  for (const [k, v] of Object.entries(updates)) {
-    stmt.run(k, String(v));
+// One-time, transactional migration; existing records belong to the QIDI.
+db.exec('BEGIN IMMEDIATE');
+try {
+  db.exec(`CREATE TABLE IF NOT EXISTS printers (id TEXT PRIMARY KEY, settings TEXT NOT NULL)`);
+  const legacy = Object.fromEntries(db.prepare('SELECT key,value FROM config').all().map(r => [r.key,r.value]));
+  const seed = db.prepare('INSERT OR IGNORE INTO printers VALUES (?,?)');
+  seed.run('qidi', JSON.stringify({ ...legacy, name: 'QIDI X-Plus 3', model: 'qidi', camera_stream_url: '' }));
+  seed.run('u1', JSON.stringify({ name: 'Snapmaker U1', model: 'u1', printer_ip: '', moonraker_url: '', camera_url: '', camera_stream_url: '', auto_enabled: '0', auto_interval_min: '10', controls_enabled: '0', ollama_url: legacy.ollama_url, ollama_model: legacy.ollama_model, chat_llm_url: legacy.chat_llm_url, chat_llm_model: legacy.chat_llm_model }));
+  for (const table of ['diagnoses','slicer_jobs']) {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+    if (!columns.some(c => c.name === 'printer_id')) db.exec(`ALTER TABLE ${table} ADD COLUMN printer_id TEXT NOT NULL DEFAULT 'qidi'`);
   }
+  db.exec('COMMIT');
+} catch (e) { db.exec('ROLLBACK'); throw e; }
+
+export function getConfig(id = 'qidi') {
+  const row = db.prepare('SELECT settings FROM printers WHERE id=?').get(id);
+  if (!row) throw new Error('Unknown printer');
+  return { auto_nozzle_enabled:'0', auto_flow_enabled:'0', ...JSON.parse(row.settings), id };
+}
+export function listPrinters() {
+  return db.prepare('SELECT id FROM printers ORDER BY rowid').all().map(r => getConfig(r.id));
+}
+export function setConfig(updates, id = 'qidi') {
+  const { id: _, ...settings } = { ...getConfig(id), ...updates };
+  db.prepare('UPDATE printers SET settings=? WHERE id=?').run(JSON.stringify(settings), id);
 }
 
 export function insertDiagnosis(record) {
   return db.prepare(`
-    INSERT INTO diagnoses (timestamp, image_path, print_file, issues, overall_severity, raw_response, auto_triggered, printer_context)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO diagnoses (timestamp, image_path, print_file, issues, overall_severity, raw_response, auto_triggered, printer_context, printer_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     record.timestamp,
     record.image_path || null,
@@ -115,12 +125,14 @@ export function insertDiagnosis(record) {
     record.raw_response,
     record.auto_triggered ? 1 : 0,
     record.printer_context ? JSON.stringify(record.printer_context) : null,
+    record.printer_id || 'qidi',
   );
 }
 
-export function getHistory(limit = 50) {
-  return db.prepare('SELECT * FROM diagnoses ORDER BY id DESC LIMIT ?').all(limit).map(r => ({
+export function getHistory(limit = 50, printerId = 'qidi') {
+  return db.prepare('SELECT * FROM diagnoses WHERE printer_id=? ORDER BY id DESC LIMIT ?').all(printerId, limit).map(r => ({
     ...r,
+    followup:getFollowup(r.id,printerId),
     issues: JSON.parse(r.issues || '[]'),
     auto_triggered: !!r.auto_triggered,
     printer_context: r.printer_context ? JSON.parse(r.printer_context) : null,
@@ -128,3 +140,19 @@ export function getHistory(limit = 50) {
 }
 
 export default db;
+
+export function getDiagnosis(id, printerId = 'qidi') {
+  const row = db.prepare('SELECT * FROM diagnoses WHERE id=? AND printer_id=?').get(id,printerId);
+  if (!row) return null;
+  let parsed = {}; try { parsed = JSON.parse(row.raw_response || '{}'); } catch {}
+  return { ...row, followup:getFollowup(row.id,printerId), issues: JSON.parse(row.issues || '[]'), printer_context: row.printer_context ? JSON.parse(row.printer_context) : null, summary: parsed?.summary || '' };
+}
+
+export function getLatestAutoDiagnosis(printerId) {
+  const row = db.prepare('SELECT id,timestamp,overall_severity AS severity FROM diagnoses WHERE printer_id=? AND auto_triggered=1 ORDER BY id DESC LIMIT 1').get(printerId);
+  return row || null;
+}
+
+db.exec(`CREATE TABLE IF NOT EXISTS diagnosis_followups (diagnosis_id INTEGER PRIMARY KEY,printer_id TEXT NOT NULL,payload TEXT NOT NULL)`);
+export function saveFollowup(id,printerId,data) { db.prepare('INSERT OR REPLACE INTO diagnosis_followups VALUES (?,?,?)').run(id,printerId,JSON.stringify(data)); }
+export function getFollowup(id,printerId) {const r=db.prepare('SELECT payload FROM diagnosis_followups WHERE diagnosis_id=? AND printer_id=?').get(id,printerId);return r?JSON.parse(r.payload):null;}

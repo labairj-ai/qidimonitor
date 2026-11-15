@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import multer from 'multer';
-import fetch from 'node-fetch';
+import fetch, { FormData, Blob } from 'node-fetch';
 import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -9,6 +9,10 @@ import { randomUUID } from 'crypto';
 import { getConfig, insertSlicerJob, getSlicerJobs, getSlicerJob, deleteSlicerJob } from '../db.js';
 
 const router = Router();
+router.use((req, res, next) => {
+  if (req.method !== 'GET' && getConfig(req.printerId).model !== 'qidi') return res.status(409).json({ error: 'U1 slicing awaits a verified U1 profile. Slice with Snapmaker Orca and upload the G-code here.' });
+  next();
+});
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 200 * 1024 * 1024 } });
 
 const ORCA = '/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer';
@@ -39,7 +43,8 @@ const QUALITY_PRESETS = {
 };
 
 // GET /api/slicer/options
-router.get('/options', (_req, res) => {
+router.get('/options', (req, res) => {
+  if (getConfig(req.printerId).model !== 'qidi') return res.json({ supported: false, materials: [], qualities: [], defaults: {} });
   res.json({
     materials: Object.keys(FILAMENTS),
     qualities: Object.keys(QUALITY_PRESETS),
@@ -48,13 +53,13 @@ router.get('/options', (_req, res) => {
 });
 
 // GET /api/slicer/jobs — list stored STL jobs
-router.get('/jobs', (_req, res) => {
-  res.json(getSlicerJobs());
+router.get('/jobs', (req, res) => {
+  res.json(getSlicerJobs(req.printerId));
 });
 
 // GET /api/slicer/jobs/:id/stl — download stored STL
 router.get('/jobs/:id/stl', (req, res) => {
-  const job = getSlicerJob(req.params.id);
+  const job = getSlicerJob(req.params.id, req.printerId);
   if (!job || !fs.existsSync(job.stl_path)) return res.status(404).json({ error: 'STL not found' });
   res.setHeader('Content-Type', 'application/octet-stream');
   res.setHeader('Content-Disposition', `attachment; filename="${job.stl_name}"`);
@@ -63,17 +68,17 @@ router.get('/jobs/:id/stl', (req, res) => {
 
 // DELETE /api/slicer/jobs/:id
 router.delete('/jobs/:id', (req, res) => {
-  const job = getSlicerJob(req.params.id);
+  const job = getSlicerJob(req.params.id, req.printerId);
   if (!job) return res.status(404).json({ error: 'Job not found' });
   try { fs.unlinkSync(job.stl_path); } catch { /* already gone */ }
-  deleteSlicerJob(req.params.id);
+  deleteSlicerJob(req.params.id, req.printerId);
   res.json({ ok: true });
 });
 
 // POST /api/slicer/slice — slice uploaded STL
 router.post('/slice', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No STL file provided' });
-  const { settings, result, err } = await doSlice(req.file.buffer, req.file.originalname, req.body);
+  const { settings, result, err } = await doSlice(req.file.buffer, req.file.originalname, req.body, getConfig(req.printerId));
   if (err) return res.status(500).json({ error: err });
 
   // Persist STL for future re-slicing
@@ -81,6 +86,7 @@ router.post('/slice', upload.single('file'), async (req, res) => {
   const stlPath = path.join(STLS_DIR, `${jobId}.stl`);
   fs.writeFileSync(stlPath, req.file.buffer);
   insertSlicerJob({
+    printer_id: req.printerId,
     id: jobId,
     stl_name: req.file.originalname,
     stl_path: stlPath,
@@ -94,11 +100,11 @@ router.post('/slice', upload.single('file'), async (req, res) => {
 
 // POST /api/slicer/reslice/:id — re-slice a stored STL with new settings
 router.post('/reslice/:id', async (req, res) => {
-  const job = getSlicerJob(req.params.id);
+  const job = getSlicerJob(req.params.id, req.printerId);
   if (!job || !fs.existsSync(job.stl_path)) return res.status(404).json({ error: 'STL not found' });
 
   const stlBuffer = fs.readFileSync(job.stl_path);
-  const { settings, result, err } = await doSlice(stlBuffer, job.stl_name, req.body);
+  const { settings, result, err } = await doSlice(stlBuffer, job.stl_name, req.body, getConfig(req.printerId));
   if (err) return res.status(500).json({ error: err });
 
   // Update the job record with new settings + gcode name
@@ -108,7 +114,7 @@ router.post('/reslice/:id', async (req, res) => {
 });
 
 // --- Shared slice logic ---
-async function doSlice(stlBuffer, originalName, body) {
+async function doSlice(stlBuffer, originalName, body, config) {
   const {
     material = 'PLA',
     quality = 'Standard (0.20mm)',
@@ -190,7 +196,6 @@ async function doSlice(stlBuffer, originalName, body) {
     const baseName = originalName.replace(/\.stl$/i, '');
     const outputName = `${baseName}_${material}_${quality.replace(/[^a-z0-9]/gi, '_')}.gcode`;
 
-    const config = getConfig();
     const moonrakerBase = config.moonraker_url || (config.printer_ip ? `http://${config.printer_ip}:7125` : null);
     if (!moonrakerBase) return { err: 'Printer not configured' };
 

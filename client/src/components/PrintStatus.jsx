@@ -1,3 +1,5 @@
+import NozzleControl from './NozzleControl.jsx';
+import { usePrinterApi } from '../printerApi.jsx';
 import React, { useState, useEffect, useCallback } from 'react';
 
 function fmtTime(sec) {
@@ -29,6 +31,7 @@ const STATE_COLORS = {
 };
 
 export default function PrintStatus({ config, onPrinterFound }) {
+  const { apiFetch } = usePrinterApi();
   const [status, setStatus] = useState(null);
   const [ctx, setCtx] = useState(null);
   const [error, setError] = useState(null);
@@ -39,8 +42,8 @@ export default function PrintStatus({ config, onPrinterFound }) {
     if (!config?.printer_ip && !config?.moonraker_url) return;
     try {
       const [statusRes, ctxRes] = await Promise.all([
-        fetch('/api/printer/status'),
-        fetch('/api/printer/context'),
+        apiFetch('/api/printer/status'),
+        apiFetch('/api/printer/context'),
       ]);
       if (!statusRes.ok) throw new Error(await statusRes.text());
       setStatus(await statusRes.json());
@@ -50,29 +53,33 @@ export default function PrintStatus({ config, onPrinterFound }) {
     } catch (e) {
       setError(e.message);
       setCtx(null);
+      setStatus(null);
     }
-  }, [config?.printer_ip, config?.moonraker_url]);
+  }, [config?.printer_ip, config?.moonraker_url, apiFetch]);
 
   useEffect(() => {
     poll();
     const id = setInterval(poll, 5000);
-    return () => clearInterval(id);
-  }, [poll]);
+    const changed = e => { if (e.detail?.printerId === config.id) poll(); };
+    window.addEventListener('printer-controls-changed', changed);
+    return () => { clearInterval(id); window.removeEventListener('printer-controls-changed', changed); };
+  }, [poll, config.id]);
 
   const runDiscovery = async () => {
     setDiscovering(true);
     setFoundIp(null);
     try {
-      const r = await fetch('/api/printer/discover', { method: 'POST' });
+      const r = await fetch(`/api/printers/${config.id}/test`, { method: 'POST' });
       const data = await r.json();
-      if (data.status === 'found') {
-        setFoundIp(data.ip);
+      if (!r.ok) throw new Error(data.error);
+      if (data.ok) {
+        setFoundIp(data.hostname);
         setError(null);
         onPrinterFound?.();
         setTimeout(poll, 500);
       }
     } catch (e) {
-      // silent
+      setError(e.message);
     } finally {
       setDiscovering(false);
     }
@@ -89,32 +96,38 @@ export default function PrintStatus({ config, onPrinterFound }) {
   // Sync sliders when fresh context arrives
   useEffect(() => {
     if (ctx?.speed_factor_pct != null) setSpeedPct(ctx.speed_factor_pct);
-    if (ctx?.flow_pct != null) setFlowPct(ctx.flow_pct);
     if (ctx?.fan_pct != null) setFanPct(ctx.fan_pct);
-  }, [ctx?.speed_factor_pct, ctx?.flow_pct, ctx?.fan_pct]);
+  }, [ctx?.speed_factor_pct, ctx?.fan_pct]);
+
+  useEffect(() => {
+    if (ctx?.flow_pct != null) setFlowPct(ctx.flow_pct);
+  }, [ctx?.flow_pct]);
 
   const sendGcode = async (script, setPending) => {
     setPending(true);
     try {
-      await fetch('/api/printer/gcode', {
+      const r = await apiFetch('/api/printer/gcode', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ script }),
       });
+      if (!r.ok) throw new Error((await r.json()).error || 'Control failed');
       setTimeout(poll, 800);
-    } catch {}
+    } catch(e) { setError(e.message); }
     finally { setPending(false); }
   };
 
   const printAction = async (action) => {
     setControlling(action);
     try {
-      await fetch(`/api/files/print/${action}`, { method: 'POST' });
+      const r = await apiFetch(`/api/files/print/${action}`, { method: 'POST' });
+      if (!r.ok) throw new Error((await r.json()).error || 'Control failed');
       setTimeout(poll, 800);
-    } catch {}
+    } catch(e) { setError(e.message); }
     finally { setControlling(null); }
   };
 
+  const canControl = config?.model === 'qidi' || config?.controls_enabled === '1';
   const stats = status?.print_stats;
   const extruder = status?.extruder;
   const bed = status?.heater_bed;
@@ -140,7 +153,7 @@ export default function PrintStatus({ config, onPrinterFound }) {
           {foundIp ? (
             <p style={{ color: 'var(--ok)', fontSize: 13 }}>Found at {foundIp} — reconnecting…</p>
           ) : discovering ? (
-            <p style={{ color: 'var(--accent)', fontSize: 13 }}>Scanning network for printer…</p>
+            <p style={{ color: 'var(--accent)', fontSize: 13 }}>Checking saved printer address…</p>
           ) : (
             <>
               <p style={{ color: 'var(--crit)', fontSize: 13, marginBottom: 10 }}>Printer unreachable</p>
@@ -157,7 +170,7 @@ export default function PrintStatus({ config, onPrinterFound }) {
                   cursor: 'pointer',
                 }}
               >
-                Find Printer
+                Check connection
               </button>
             </>
           )}
@@ -166,8 +179,8 @@ export default function PrintStatus({ config, onPrinterFound }) {
         <p style={{ color: 'var(--muted)', fontSize: 13 }}>Connecting…</p>
       ) : (
         <>
-          <div style={{ display: 'flex', gap: 24, marginBottom: 14 }}>
-            <TempGauge label="Nozzle" actual={extruder?.temperature} target={extruder?.target} />
+          <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', marginBottom: 14 }}>
+            {ctx?.toolheads?.length > 1 ? ctx.toolheads.map((t,i) => <TempGauge key={t.name} label={`T${i + 1}${t.active ? ' · active' : ''}`} actual={t.temperature} target={t.target}/>) : <TempGauge label="Nozzle" actual={extruder?.temperature} target={extruder?.target}/> }
             <TempGauge label="Bed" actual={bed?.temperature} target={bed?.target} />
             {ctx?.chamber_temp != null && (
               <TempGauge label="Chamber" actual={ctx.chamber_temp} target={ctx.chamber_target} />
@@ -232,8 +245,10 @@ export default function PrintStatus({ config, onPrinterFound }) {
             </div>
           )}
 
+          {config?.model === 'qidi' && ctx && ['printing','paused'].includes(state) && <NozzleControl config={config} ctx={ctx} onApplied={poll}/>}
+
           {/* Speed, flow, fan controls */}
-          {state === 'printing' && (
+          {canControl && state === 'printing' && (
             <div style={{ marginBottom: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
               {/* Fan */}
               {ctx?.fan_pct != null && (
@@ -298,18 +313,28 @@ export default function PrintStatus({ config, onPrinterFound }) {
                     </button>
                   </div>
                 </div>
-                <input type="range" min="50" max="150" step="5" value={flowPct}
-                  onChange={e => setFlowPct(Number(e.target.value))}
-                  onMouseUp={() => sendGcode(`M221 S${flowPct}`, setPendingFlow)}
-                  onTouchEnd={() => sendGcode(`M221 S${flowPct}`, setPendingFlow)}
-                  style={{ width: '100%', accentColor: flowPct !== 100 ? 'var(--warn)' : 'var(--accent)' }}
-                />
+                <div role="group" aria-label="Flow rate adjustment" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <button type="button" className="btn-ghost" aria-label="Decrease flow by 1 percent"
+                    disabled={pendingFlow || Number(flowPct) <= 50}
+                    onClick={() => setFlowPct(Math.max(50, (Number(flowPct) || 100) - 1))}>−</button>
+                  <input type="number" min="50" max="150" step="1" aria-label="Flow rate percent" value={flowPct}
+                    disabled={pendingFlow} onChange={e => setFlowPct(e.target.value === '' ? '' : Number(e.target.value))}
+                    style={{ width: 90, textAlign: 'center' }}/>
+                  <span>%</span>
+                  <button type="button" className="btn-ghost" aria-label="Increase flow by 1 percent"
+                    disabled={pendingFlow || Number(flowPct) >= 150}
+                    onClick={() => setFlowPct(Math.min(150, (Number(flowPct) || 100) + 1))}>+</button>
+                  <button type="button" className="btn-primary"
+                    disabled={pendingFlow || !Number.isInteger(flowPct) || flowPct < 50 || flowPct > 150 || flowPct === ctx?.flow_pct}
+                    onClick={() => sendGcode(`M221 S${flowPct}`, setPendingFlow)}>{pendingFlow ? 'Applying…' : 'Apply flow'}</button>
+                </div>
+                <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 5 }}>Current: {ctx?.flow_pct ?? '—'}%. Adjust in 1% steps, then click Apply flow.</p>
               </div>
             </div>
           )}
 
           {/* Print controls */}
-          {(state === 'printing' || state === 'paused') && (
+          {canControl && (state === 'printing' || state === 'paused') && (
             <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
               {state === 'printing' ? (
                 <button
@@ -329,7 +354,7 @@ export default function PrintStatus({ config, onPrinterFound }) {
                 </button>
               )}
               <button
-                onClick={() => { if (confirm('Cancel print?')) printAction('cancel'); }}
+                onClick={() => { if (confirm(`Cancel print on ${config.name}?`)) printAction('cancel'); }}
                 disabled={!!controlling}
                 style={{ background: 'none', color: 'var(--crit)', border: '1px solid var(--crit)', borderRadius: 5, padding: '5px 14px', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}
               >

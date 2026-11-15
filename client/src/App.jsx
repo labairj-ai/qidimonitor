@@ -1,92 +1,48 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import LiveFeed from './components/LiveFeed.jsx';
+import ChamberLight from './components/ChamberLight.jsx';
 import DiagnosePanel from './components/DiagnosePanel.jsx';
 import PrintStatus from './components/PrintStatus.jsx';
 import AutoMonitor from './components/AutoMonitor.jsx';
-import History from './components/History.jsx';
 import Settings from './components/Settings.jsx';
 import FileManager from './components/FileManager.jsx';
 import Slicer from './components/Slicer.jsx';
+import { PrinterContext } from './printerApi.jsx';
 
-const TABS = ['Monitor', 'Files', 'History', 'Settings'];
-
-export default function App() {
-  const [tab, setTab] = useState('Monitor');
-  const [config, setConfig] = useState(null);
+function Workspace({ config, reload, setup }) {
+  const [tab, setTab] = useState(setup ? 'Settings' : 'Monitor');
   const [lastResult, setLastResult] = useState(null);
-  const [fileRefreshKey, setFileRefreshKey] = useState(0);
-  const [resliceJob, setResliceJob] = useState(null);
-
-  const loadConfig = useCallback(async () => {
-    const r = await fetch('/api/config');
-    if (r.ok) setConfig(await r.json());
+  const [refresh, setRefresh] = useState(0);
+  const [reslice, setReslice] = useState(null);
+  const ready = !!(config.printer_ip || config.moonraker_url);
+  return <PrinterContext.Provider value={config.id}>
+    <div className="workspace-heading"><div><h2>{config.name}</h2><p>{ready ? config.printer_ip || config.moonraker_url : 'Ready to set up when your printer arrives'}</p></div>
+      <span className="chip">{config.model === 'u1' ? 'Four-toolhead printer' : 'QIDI'}</span></div>
+    <nav className="tabs">{['Monitor','Files','Settings'].map(t => <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>{t}</button>)}</nav>
+    {tab === 'Monitor' && (!ready ? <div className="card setup-card"><h3>Your U1 has a place here.</h3><p>Once it arrives, save its local address, test the connection, and configure the camera. QIDI monitoring runs independently.</p><button className="btn-primary" onClick={() => setTab('Settings')}>Set up {config.name}</button></div> : <div className="detail-grid"><div className="stack"><LiveFeed config={config}/><ChamberLight config={config}/><PrintStatus config={config} onPrinterFound={reload}/><AutoMonitor config={config} onConfigChange={reload}/></div><DiagnosePanel config={config} latestResult={lastResult} onResult={setLastResult}/></div>)}
+    {tab === 'Files' && <div className="detail-grid"><div>{config.model === 'qidi' ? <Slicer preloadJob={reslice} onFileUploaded={() => { setRefresh(n => n+1); setReslice(null); }}/> : <div className="card setup-card"><h3>Slice for your U1</h3><p>Use Snapmaker Orca with your U1 profile, then upload its G-code here. Built-in U1 slicing will be enabled after its machine and toolhead profiles are verified.</p><p>{config.controls_enabled !== '1' ? 'Uploads and print controls unlock in Settings after you verify this printer.' : 'Uploads and controls are enabled for this printer.'}</p></div>}</div><FileManager printerName={config.name} refreshKey={refresh} onReslice={config.model === 'qidi' ? setReslice : undefined}/></div>}
+    {tab === 'Settings' && <Settings config={config} onSave={reload}/>}
+  </PrinterContext.Provider>;
+}
+function PrinterCard({ config, open, reload }) {
+  const ready = !!(config.printer_ip || config.moonraker_url);
+  return <PrinterContext.Provider value={config.id}><section className="printer-card"><div className="card-heading"><div><span className="eyebrow">{config.model === 'u1' ? 'SNAPMAKER · U1' : 'QIDI · X-PLUS 3'}</span><h2>{config.name}</h2></div><button className="btn-ghost" onClick={open}>{ready ? 'Open printer →' : 'Set up →'}</button></div>
+    {ready ? <div className="stack"><LiveFeed config={config}/><ChamberLight config={config}/><PrintStatus config={config} onPrinterFound={reload}/><AutoMonitor config={config} onConfigChange={reload}/></div> : <div className="card arrival-card"><div className="arrival-icon">＋</div><h3>Ready when it arrives</h3><p>Your U1 workspace is prepared. Add its address and camera to bring it online alongside your QIDI.</p><div className="setup-steps"><span>01 · Connect printer</span><span>02 · Check camera</span><span>03 · Start monitoring</span></div><button className="btn-primary" onClick={open}>Prepare U1 setup</button></div>}</section></PrinterContext.Provider>;
+}
+export default function App() {
+  const [printers, setPrinters] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [error, setError] = useState('');
+  const reload = useCallback(async () => {
+    try { const r = await fetch('/api/printers'); if (!r.ok) throw new Error('Unable to load printers'); setPrinters(await r.json()); setError(''); }
+    catch(e) { setError(e.message); }
   }, []);
-
-  useEffect(() => { loadConfig(); }, [loadConfig]);
-
-  const printerReady = config?.printer_ip || config?.camera_url;
-
-  return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-      {/* Header */}
-      <header style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border)', padding: '12px 20px', display: 'flex', alignItems: 'center', gap: 12 }}>
-        <span style={{ fontSize: 20, fontWeight: 800, letterSpacing: '-0.02em' }}>QIDI Monitor</span>
-        <span style={{ color: 'var(--muted)', fontSize: 13 }}>X-Plus 3</span>
-        {config && (
-          <span style={{ marginLeft: 'auto', fontSize: 12, color: printerReady ? 'var(--ok)' : 'var(--warn)' }}>
-            {printerReady ? `● ${config.printer_ip || 'camera configured'}` : '● Not configured'}
-          </span>
-        )}
-      </header>
-
-      {/* Tabs */}
-      <nav style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border)', display: 'flex', padding: '0 20px' }}>
-        {TABS.map(t => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            style={{
-              background: 'none',
-              border: 'none',
-              borderBottom: tab === t ? '2px solid var(--accent)' : '2px solid transparent',
-              borderRadius: 0,
-              color: tab === t ? 'var(--accent)' : 'var(--muted)',
-              padding: '10px 16px',
-              fontWeight: tab === t ? 700 : 400,
-              fontSize: 14,
-            }}
-          >
-            {t}
-          </button>
-        ))}
-      </nav>
-
-      {/* Content */}
-      <main style={{ flex: 1, padding: 20, maxWidth: 960, margin: '0 auto', width: '100%' }}>
-        {tab === 'Monitor' && (
-          <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <LiveFeed config={config} />
-              <PrintStatus config={config} onPrinterFound={loadConfig} />
-              <AutoMonitor config={config} onConfigChange={loadConfig} />
-            </div>
-            <DiagnosePanel config={config} onResult={setLastResult} latestResult={lastResult} />
-          </div>
-        )}
-        {tab === 'Files' && (
-          <div style={{ display: 'grid', gap: 16, gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-              <Slicer
-                onFileUploaded={() => { setFileRefreshKey(k => k + 1); setResliceJob(null); }}
-                preloadJob={resliceJob}
-              />
-            </div>
-            <FileManager refreshKey={fileRefreshKey} onReslice={setResliceJob} />
-          </div>
-        )}
-        {tab === 'History' && <History />}
-        {tab === 'Settings' && <Settings config={config} onSave={loadConfig} />}
-      </main>
-    </div>
-  );
+  useEffect(() => { reload(); }, [reload]);
+  const printer = printers.find(p => p.id === selected);
+  return <div className="app"><header className="app-header"><div><span className="eyebrow">YOUR PRINT ROOM</span><h1>QIDI Monitor<span className="header-dot"> / </span><span className="header-subtitle">Printers</span></h1></div><span className="fleet-count">{printers.length} printers</span></header>
+    <main className="app-main"><div className="printer-nav"><button className={!selected ? 'btn-primary' : 'btn-ghost'} onClick={() => setSelected(null)}>All printers</button>{printers.map(p => <button key={p.id} className={selected === p.id ? 'btn-primary' : 'btn-ghost'} onClick={() => setSelected(p.id)}>{p.name}</button>)}</div>
+    {error && <p role="alert">{error} <button onClick={reload}>Retry</button></p>}
+    {!printers.length && !error && <p>Loading your printers…</p>}
+    {printer ? <Workspace key={printer.id} config={printer} reload={reload} setup={!printer.printer_ip && !printer.moonraker_url}/> : <><div className="overview-heading"><h2>Both printers. One view.</h2><p>Independent cameras, progress, and monitoring for every print.</p></div><div className="fleet-grid">{printers.map(p => <PrinterCard key={p.id} config={p} reload={reload} open={() => setSelected(p.id)}/>)}</div></>}
+    </main></div>;
 }

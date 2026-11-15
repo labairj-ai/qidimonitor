@@ -70,3 +70,31 @@ label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px
 .chip-ok { background: #1a3d2a; color: var(--ok); }
 .chip-warning { background: #3d2e10; color: var(--warn); }
 .chip-critical { background: #3d1010; color: var(--crit); }
+
+.app { min-height: 100vh; }
+.app-header { padding: 22px max(20px, calc((100vw - 1320px) / 2)); background: var(--surface); border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.eyebrow { color: var(--muted); font-size: 10px; letter-spacing: .16em; font-weight: 700; }
+h1 { font-size: 24px; letter-spacing: -.03em; margin-top: 3px; }
+.header-dot, .header-subtitle { color: var(--muted); font-weight: 400; }
+.fleet-count { border: 1px solid var(--border); padding: 5px 12px; border-radius: 20px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.app-main { max-width: 1360px; margin: auto; padding: 24px 20px 50px; }
+.printer-nav { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 28px; }
+.overview-heading { margin-bottom: 22px; }
+.overview-heading h2 { font-size: 23px; letter-spacing: -.03em; }
+.overview-heading p, .workspace-heading p { color: var(--muted); font-size: 13px; margin-top: 5px; }
+.fleet-grid, .detail-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 24px; align-items: start; }
+.stack { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.printer-card { min-width: 0; }
+.card-heading, .workspace-heading { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 16px; }
+.card-heading h2 { font-size: 18px; margin-top: 3px; }
+.card-heading button { font-size: 12px; padding: 8px 12px; }
+.arrival-card { min-height: 390px; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; padding: 32px; background: linear-gradient(145deg,var(--surface),#17243b); }
+.arrival-icon { width: 54px; height: 54px; display: grid; place-items: center; color: var(--accent); background: #203455; border-radius: 14px; font-size: 28px; margin-bottom: 20px; }
+.arrival-card h3 { font-size: 22px; }
+.arrival-card p, .setup-card p { color: var(--muted); font-size: 14px; line-height: 1.7; margin: 10px 0 18px; max-width: 440px; }
+.setup-steps { display: flex; flex-direction: column; gap: 8px; font-size: 12px; color: var(--muted); margin-bottom: 24px; }
+.tabs { display: flex; gap: 6px; border-bottom: 1px solid var(--border); margin-bottom: 24px; }
+.tabs button { background: none; color: var(--muted); border-radius: 0; border-bottom: 2px solid transparent; }
+.tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
+.connection-result { margin-top: 16px; padding: 14px; background: var(--surface2); border-radius: 8px; overflow-wrap: anywhere; font-size: 13px; }
+@media(max-width: 760px) { .fleet-grid,.detail-grid { grid-template-columns: minmax(0,1fr); } .app-header { padding: 16px; } .app-main { padding: 20px 14px; } h1 { font-size: 20px; } .header-subtitle,.header-dot { display: none; } .card-heading { flex-wrap: wrap; } }

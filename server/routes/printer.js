@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import fetch from 'node-fetch';
 import { getConfig } from '../db.js';
-import { discoverPrinter, isDiscovering } from '../discovery.js';
+import { recordManualCorrection } from '../correctionMemory.js';
+import { executeFix, readFixState } from '../diagnosisFixes.js';
 import { getPrinterContext } from '../printerContext.js';
 
 const router = Router();
@@ -14,44 +15,93 @@ function moonrakerUrl(config) {
 
 function cameraSnapshotUrl(config) {
   if (config.camera_url) return config.camera_url;
-  if (config.printer_ip) return `http://${config.printer_ip}/webcam/?action=snapshot`;
+  if (config.model === 'qidi' && config.printer_ip) return `http://${config.printer_ip}/webcam/?action=snapshot`;
   return null;
 }
 
 function cameraStreamUrl(config) {
-  if (config.printer_ip) return `http://${config.printer_ip}/webcam/?action=stream`;
+  if (config.camera_stream_url) return config.camera_stream_url;
+  if (config.model === 'qidi' && config.printer_ip) return `http://${config.printer_ip}/webcam/?action=stream`;
   return null;
 }
 
-// Try a fetch; on network failure, auto-discover and retry once
-async function fetchWithRediscover(urlFn, fetchFn) {
-  const config = getConfig();
-  let url = urlFn(config);
+// A failed connection never reassigns this printer to another network device.
+async function fetchForPrinter(req, urlFn, fetchFn) {
+  const config = getConfig(req.printerId);
+  const url = urlFn(config);
   if (!url) return { error: 'not_configured' };
-
-  try {
-    return await fetchFn(url, config);
-  } catch (e) {
-    if (!isDiscovering() && config.printer_ip) {
-      const newIp = await discoverPrinter(config.printer_ip);
-      if (newIp) {
-        const newConfig = getConfig();
-        const newUrl = urlFn(newConfig);
-        try {
-          return await fetchFn(newUrl, newConfig);
-        } catch (e2) {
-          throw e2;
-        }
-      }
-    }
-    throw e;
-  }
+  return fetchFn(url, config);
 }
+
+// Only the explicitly identified chamber-light pin may be controlled here.
+async function chamberLight(base) {
+  const r = await fetch(`${base}/printer/objects/list`, { signal: AbortSignal.timeout(5000) });
+  if (!r.ok) throw new Error(`Moonraker ${r.status}`);
+  const data = await r.json();
+  if (!data.result?.objects?.includes('output_pin caselight')) return { supported: false };
+  const query = await fetch(`${base}/printer/objects/query?output_pin%20caselight&configfile`, { signal: AbortSignal.timeout(5000) });
+  if (!query.ok) throw new Error(`Moonraker ${query.status}`);
+  const status = (await query.json()).result?.status;
+  const value = status?.['output_pin caselight']?.value;
+  const scale = Number(status?.configfile?.config?.['output_pin caselight']?.scale ?? 1);
+  if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isFinite(scale) || scale <= 0) throw new Error('Chamber light state unavailable');
+  return { supported: true, on: value > 0, scale };
+}
+
+router.get('/light', async (req, res) => {
+  const base = moonrakerUrl(getConfig(req.printerId));
+  if (!base) return res.status(400).json({ error: 'Save a printer address first' });
+  try {
+    const { scale, ...state } = await chamberLight(base);
+    res.json(state);
+  } catch (e) { res.status(503).json({ error: e.message }); }
+});
+
+router.post('/light', async (req, res) => {
+  if (typeof req.body.on !== 'boolean') return res.status(400).json({ error: 'on must be a boolean' });
+  const config = getConfig(req.printerId);
+  if (config.model === 'u1' && config.controls_enabled !== '1') return res.status(409).json({ error: 'Enable U1 controls in Settings first.' });
+  const base = moonrakerUrl(config);
+  if (!base) return res.status(400).json({ error: 'Save a printer address first' });
+  try {
+    const state = await chamberLight(base);
+    if (!state.supported) return res.status(409).json({ error: 'This printer does not expose a supported chamber light' });
+    // The G-code acknowledgment can lag the pin itself. Watch actual state
+    // concurrently, rather than waiting for a response that may remain queued.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    let commandError;
+    const command = fetch(`${base}/printer/gcode/script`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ script: `SET_PIN PIN=caselight VALUE=${req.body.on ? state.scale : 0}` }),
+      signal: controller.signal,
+    }).then(async r => {
+      if (!r.ok) throw new Error(`Moonraker ${r.status}: ${await r.text()}`);
+      await r.text();
+    }).catch(e => { commandError = e; });
+    try {
+      const deadline = Date.now() + 12000;
+      do {
+        await new Promise(resolve => setTimeout(resolve, 250));
+        const actual = await chamberLight(base).catch(() => null);
+        if (actual?.supported && actual.on === req.body.on) return res.json({ ok: true, on: actual.on });
+        if (commandError && !['AbortError', 'TimeoutError'].includes(commandError.name)) throw commandError;
+      } while (Date.now() < deadline);
+      return res.status(202).json({ pending: true, requested: req.body.on });
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
+      await command;
+    }
+  } catch (e) {
+    res.status(503).json({ error: ['AbortError', 'TimeoutError'].includes(e.name) ? 'The printer is taking too long to report its light state. Please check the connection.' : e.message });
+  }
+});
 
 // GET /api/printer/status
 router.get('/status', async (req, res) => {
   try {
-    const result = await fetchWithRediscover(
+    const result = await fetchForPrinter(req,
       cfg => moonrakerUrl(cfg) && `${moonrakerUrl(cfg)}/printer/objects/query?print_stats&extruder&heater_bed&display_status`,
       async (url) => {
         const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
@@ -68,7 +118,7 @@ router.get('/status', async (req, res) => {
 
 // GET /api/printer/snapshot — returns raw image bytes
 router.get('/snapshot', async (req, res) => {
-  const config = getConfig();
+  const config = getConfig(req.printerId);
   const url = cameraSnapshotUrl(config);
   if (!url) return res.status(400).json({ error: 'Printer IP not configured' });
 
@@ -85,7 +135,7 @@ router.get('/snapshot', async (req, res) => {
 
 // GET /api/printer/stream — proxy MJPEG stream
 router.get('/stream', async (req, res) => {
-  const config = getConfig();
+  const config = getConfig(req.printerId);
   const url = cameraStreamUrl(config);
   if (!url) return res.status(400).json({ error: 'Printer IP not configured' });
 
@@ -136,38 +186,54 @@ router.get('/stream', async (req, res) => {
 
 // POST /api/printer/discover — manual discovery trigger
 router.post('/discover', async (req, res) => {
-  if (isDiscovering()) {
-    return res.json({ status: 'in_progress' });
-  }
-  const config = getConfig();
-  const ip = await discoverPrinter(config.printer_ip);
-  if (ip) {
-    res.json({ status: 'found', ip });
-  } else {
-    res.status(404).json({ status: 'not_found' });
-  }
+  res.status(409).json({ error: 'Automatic reassignment is disabled for multiple printers. Set this printer’s address in Settings and test its connection.' });
 });
-
-// GET /api/printer/discover — check if discovery is running
-router.get('/discover', (req, res) => {
-  res.json({ discovering: isDiscovering(), printer_ip: getConfig().printer_ip });
-});
+router.get('/discover', (req, res) => res.json({ discovering: false, printer_ip: getConfig(req.printerId).printer_ip }));
 
 // GET /api/printer/context — full printer context with material profile + deviations
 router.get('/context', async (req, res) => {
-  const config = getConfig();
+  const config = getConfig(req.printerId);
   const ctx = await getPrinterContext(config);
   if (!ctx) return res.status(503).json({ error: 'Printer unreachable' });
   res.json(ctx);
+});
+
+// Manual target entry is independent of AI diagnosis eligibility.
+const nozzleBusy = new Set();
+router.post('/nozzle', async (req, res) => {
+  const config = getConfig(req.printerId);
+  if (config.model !== 'qidi') return res.status(409).json({ error: 'Manual nozzle controls are currently available for the QIDI only.' });
+  const { target, expected_target, extruder, filename } = req.body;
+  if (!Number.isInteger(target) || !Number.isFinite(expected_target) || typeof filename !== 'string' || !/^extruder\d*$/.test(extruder)) return res.status(400).json({ error: 'Enter a whole-number temperature and refresh the printer readings.' });
+  if (nozzleBusy.has(req.printerId)) return res.status(409).json({ error: 'A nozzle change is already in progress.' });
+  nozzleBusy.add(req.printerId);
+  try {
+    const ctx = await getPrinterContext(config);
+    if (!ctx || !['printing','paused'].includes(ctx.print_state)) return res.status(409).json({ error: 'Nozzle target changes require an active or paused print.' });
+    if (ctx.active_extruder !== extruder || ctx.filename !== filename || ctx.nozzle_target !== expected_target) return res.status(409).json({ error: 'The printer or nozzle target changed. Review the current readings and apply again.' });
+    const cfg = ctx.printer_config;
+    if (!Number.isFinite(cfg?.nozzle_min_temp) || !Number.isFinite(cfg?.nozzle_max_temp) || !Number.isFinite(cfg?.min_extrude_temp)) return res.status(409).json({ error: 'Nozzle heater limits are unavailable.' });
+    const min = Math.max(180, cfg.nozzle_min_temp + 5, cfg.min_extrude_temp + 5);
+    const max = Math.min(300, cfg.nozzle_max_temp - 5);
+    if (target < min || target > max) return res.status(400).json({ error: `Choose a nozzle target between ${min} and ${max}°C.` });
+    if (target === ctx.nozzle_target) return res.json({ confirmed:true, observed:target });
+    const result = await executeFix({ fix: { control:'nozzle', before:ctx.nozzle_target, after:target, baseline:ctx },
+      undo:false, config, request:fetch, context:cfg => readFixState(cfg,fetch,'nozzle',extruder) });
+    if(result.confirmed) await recordManualCorrection('nozzle',ctx.nozzle_target,target,ctx,config).catch(e=>console.warn(`[manual:${req.printerId}] ${e.message}`));
+    res.status(result.confirmed ? 200 : 202).json(result);
+  } catch(e) { res.status(503).json({ error: `Nozzle change could not be confirmed: ${e.message}. Check the live target before trying again.` }); }
+  finally { nozzleBusy.delete(req.printerId); }
 });
 
 // POST /api/printer/gcode — run a raw gcode command (M220, M221, etc.)
 router.post('/gcode', async (req, res) => {
   const { script } = req.body;
   if (!script) return res.status(400).json({ error: 'script required' });
-  const config = getConfig();
+  const config = getConfig(req.printerId);
   const base = moonrakerUrl(config);
   if (!base) return res.status(400).json({ error: 'Printer not configured' });
+  const flowMatch=typeof script==='string' ? script.match(/^M221 S(\d+(?:\.\d+)?)$/) : null;
+  const priorFlow=flowMatch ? await getPrinterContext(config) : null;
   try {
     const r = await fetch(`${base}/printer/gcode/script`, {
       method: 'POST',
@@ -176,6 +242,10 @@ router.post('/gcode', async (req, res) => {
       signal: AbortSignal.timeout(5000),
     });
     if (!r.ok) throw new Error(await r.text());
+    if(flowMatch && priorFlow) {
+      const actual=await readFixState(config,fetch,'flow',priorFlow.active_extruder);
+      if(actual && Math.abs(actual.flow_pct-Number(flowMatch[1]))<=0.5) await recordManualCorrection('flow',priorFlow.flow_pct,actual.flow_pct,priorFlow,config).catch(e=>console.warn(`[manual:${req.printerId}] ${e.message}`));
+    }
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });

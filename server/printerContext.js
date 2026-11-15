@@ -6,9 +6,13 @@ export async function getPrinterContext(config) {
   if (!base) return null;
 
   try {
+    const listRes = await fetch(`${base}/printer/objects/list`, { signal: AbortSignal.timeout(5000) });
+    if (!listRes.ok) return null;
+    const objects = (await listRes.json()).result?.objects || [];
+    const wanted = objects.filter(n => /^(print_stats|display_status|toolhead|gcode_move|extruder\d*|heater_bed|heater_generic hot|output_pin fan0|fan|filament_switch_sensor fila|motion_report)$/.test(n));
     const [objRes, cfgRes] = await Promise.all([
       fetch(
-        `${base}/printer/objects/query?print_stats&display_status&toolhead&gcode_move&extruder&heater_bed&heater_generic+hot&output_pin+fan0&filament_switch_sensor+fila&motion_report`,
+        `${base}/printer/objects/query?${wanted.map(encodeURIComponent).join("&")}`,
         { signal: AbortSignal.timeout(5000) }
       ),
       fetch(`${base}/printer/objects/query?configfile`, { signal: AbortSignal.timeout(5000) }),
@@ -17,13 +21,17 @@ export async function getPrinterContext(config) {
     if (!objRes.ok) return null;
     const status = (await objRes.json()).result?.status || {};
 
+    const activeExtruder = status.toolhead?.extruder || 'extruder';
     let printerCfg = null;
     if (cfgRes.ok) {
       const cfg = (await cfgRes.json()).result?.status?.configfile?.config || {};
       printerCfg = {
-        nozzle_diameter: cfg.extruder?.nozzle_diameter,
-        filament_diameter: cfg.extruder?.filament_diameter,
-        pressure_advance: cfg.extruder?.pressure_advance,
+        nozzle_diameter: cfg[activeExtruder]?.nozzle_diameter,
+        nozzle_min_temp: cfg[activeExtruder]?.min_temp != null ? Number(cfg[activeExtruder].min_temp) : null,
+        nozzle_max_temp: cfg[activeExtruder]?.max_temp != null ? Number(cfg[activeExtruder].max_temp) : null,
+        min_extrude_temp: cfg[activeExtruder]?.min_extrude_temp != null ? Number(cfg[activeExtruder].min_extrude_temp) : 170,
+        filament_diameter: cfg[activeExtruder]?.filament_diameter,
+        pressure_advance: cfg[activeExtruder]?.pressure_advance,
         max_velocity: cfg.printer?.max_velocity,
         max_accel: cfg.printer?.max_accel,
         kinematics: cfg.printer?.kinematics,
@@ -48,12 +56,17 @@ export async function getPrinterContext(config) {
     const chamber = status['heater_generic hot'];
     const filSensor = status['filament_switch_sensor fila'];
 
+    const toolheads = objects.filter(n => /^extruder\d*$/.test(n)).map(name => ({ name, active: name === activeExtruder, temperature: status[name]?.temperature, target: status[name]?.target }));
+    if (status[activeExtruder]) status.extruder = status[activeExtruder];
     const ctx = {
+      captured_at: Date.now(),
+      printer_name: config.name, model: config.model, toolheads, active_extruder: activeExtruder,
       print_state: status.print_stats?.state,
       filename,
       progress_pct: status.display_status?.progress != null ? Math.round(status.display_status.progress * 100) : null,
       print_duration_min: status.print_stats?.print_duration ? Math.round(status.print_stats.print_duration / 60) : null,
       print_duration_sec: status.print_stats?.print_duration ?? null,
+      print_total_duration_sec: status.print_stats?.total_duration ?? null,
       filament_used_mm: status.print_stats?.filament_used ? Math.round(status.print_stats.filament_used) : null,
       nozzle_temp: status.extruder?.temperature != null ? +status.extruder.temperature.toFixed(1) : null,
       nozzle_target: status.extruder?.target,
@@ -70,7 +83,7 @@ export async function getPrinterContext(config) {
       filament_detected: filSensor?.filament_detected,
       layer_height: fileMeta?.layer_height,
       first_layer_height: fileMeta?.first_layer_height,
-      filament_type: fileMeta?.filament_type?.[0] ?? fileMeta?.filament_name?.[0] ?? null,
+      filament_type: (Array.isArray(fileMeta?.filament_type) ? fileMeta.filament_type[0] : fileMeta?.filament_type) || (Array.isArray(fileMeta?.filament_name) ? fileMeta.filament_name[0] : fileMeta?.filament_name) || null,
       slicer: fileMeta?.slicer ? `${fileMeta.slicer}${fileMeta.slicer_version ? ' ' + fileMeta.slicer_version : ''}` : null,
       slicer_nozzle_temp: fileMeta?.first_layer_extr_temp ?? fileMeta?.nozzle_temperature_range_low ?? null,
       slicer_bed_temp: fileMeta?.first_layer_bed_temp ?? null,
@@ -94,7 +107,7 @@ export async function getPrinterContext(config) {
       ctx.time_remaining_sec = null;
     }
 
-    ctx.material_profile = lookupMaterial(ctx.filament_type);
+    ctx.material_profile = config.model === 'qidi' ? lookupMaterial(ctx.filament_type) : null;
     ctx.deviations = checkDeviations(ctx, ctx.material_profile);
 
     return ctx;
@@ -105,7 +118,8 @@ export async function getPrinterContext(config) {
 
 export function formatContextForPrompt(ctx) {
   if (!ctx) return '';
-  const lines = ['--- Printer Context ---'];
+  const lines = ['--- Printer Context ---', `Printer: ${ctx.printer_name} (${ctx.model})`];
+  for (const t of ctx.toolheads || []) lines.push(`Tool ${t.name}${t.active ? ' (active)' : ''}: ${t.temperature ?? 'unknown'}°C, target ${t.target ?? 'unknown'}°C`);
 
   if (ctx.print_state) lines.push(`State: ${ctx.print_state}`);
   if (ctx.filename) lines.push(`File: ${ctx.filename}`);
@@ -138,6 +152,7 @@ export function formatContextForPrompt(ctx) {
     const pc = ctx.printer_config;
     lines.push('');
     lines.push('Printer config:');
+    if (pc.nozzle_min_temp != null && pc.nozzle_max_temp != null) lines.push(`  Nozzle heater limits: ${pc.nozzle_min_temp}–${pc.nozzle_max_temp}°C; minimum extrusion temperature ${pc.min_extrude_temp}°C`);
     if (pc.nozzle_diameter) lines.push(`  Nozzle: ${pc.nozzle_diameter}mm`);
     if (pc.max_velocity) lines.push(`  Max velocity: ${pc.max_velocity}mm/s`);
     if (pc.max_accel) lines.push(`  Max accel: ${pc.max_accel}mm/s²`);
