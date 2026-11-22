@@ -36,20 +36,27 @@ export function validAdjustment(control, before, after, ctx, category) {
     Number.isFinite(ctx.z_mm) && Number.isFinite(ctx.first_layer_height) && ctx.z_mm > ctx.first_layer_height * 2;
 }
 
+function pastStartup(ctx) {
+  if (Number.isInteger(ctx.current_layer)) return ctx.current_layer > 2;
+  const first = Number(ctx.first_layer_height);
+  const layer = Number(ctx.layer_height) || first;
+  return first > 0 && layer > 0 && Number.isFinite(ctx.z_mm) && ctx.z_mm > first + layer;
+}
+
 // Suggestions are data only. Free-text suggestions and AI-supplied commands are never executed.
 export function buildFixes(parsed, ctx, { printerId, diagnosisId, uploaded = false, now = Date.now(), connection = null }) {
-  if (uploaded || ctx?.model !== 'qidi' || ctx.print_state !== 'printing' || !ctx.filename ||
+  if (uploaded || ctx?.model !== 'qidi' || ctx.print_state !== 'printing' || !ctx.filename || !pastStartup(ctx) ||
       !Number.isFinite(ctx.print_duration_sec) || !Number.isFinite(ctx.print_total_duration_sec) || !Number.isFinite(ctx.captured_at) || !['warning'].includes(parsed?.overall_severity) ||
       !Array.isArray(parsed.issues) || parsed.issues.some(i => i?.severity === 'severe' || ['spaghetti','warping','bed_adhesion','layer_delamination'].includes(i?.category))) return [];
   for (const candidate of (Array.isArray(parsed.control_suggestions) ? parsed.control_suggestions.slice(0, 5) : [])) {
     if (!candidate || typeof candidate.reason !== 'string' || !candidate.reason.trim() || candidate.reason.length > 500) continue;
     const { control, value, issue_category: category } = candidate;
-    if (!parsed.issues.some(i => i?.category === category && ['minor','moderate'].includes(i.severity))) continue;
+    if (!parsed.issues.some(i => i?.category === category && i.evidence_region === 'printed_part' && ['minor','moderate'].includes(i.severity))) continue;
     const before = ctx[CONTROL_FIELDS[control]];
     if (!validAdjustment(control, before, value, ctx, category)) continue;
     if (control === 'nozzle' && (!Number.isFinite(ctx.nozzle_temp) || Math.abs(ctx.nozzle_temp - before) > 5)) continue;
     return [{ id: randomUUID(), printer_id: printerId, diagnosis_id: diagnosisId, control,
-      connection, before, after: value, reason: candidate.reason.trim(), category, baseline: ctx,
+      connection, before, after: value, reason: candidate.reason.trim(), category, baseline: { ...ctx, evidence_region: 'printed_part' },
       created_at: now, expires_at: now + FIX_TTL_MS }];
   }
   return [];
@@ -57,6 +64,7 @@ export function buildFixes(parsed, ctx, { printerId, diagnosisId, uploaded = fal
 
 export function validateFixContext(fix, ctx, { undo = false, now = Date.now(), appliedAt } = {}) {
   if (!ctx || ctx.model !== 'qidi' || ctx.print_state !== 'printing') throw new Error('This fix requires the QIDI to be actively printing.');
+  if (!undo && (fix.baseline.evidence_region !== 'printed_part' || !pastStartup(ctx))) throw new Error('Wait until past startup and run a new diagnosis with visible evidence on the print.');
   if (ctx.filename !== fix.baseline.filename || ctx.active_extruder !== fix.baseline.active_extruder || materialKey(ctx) !== materialKey(fix.baseline)) throw new Error('The print, toolhead, or material has changed. Run a new diagnosis.');
   const age = now - fix.created_at;
   if (age < 0 || !Number.isFinite(ctx.print_duration_sec) || ctx.print_duration_sec < fix.baseline.print_duration_sec || ctx.print_duration_sec > fix.baseline.print_duration_sec + age / 1000 + 30) throw new Error('The print session has changed. Run a new diagnosis.');

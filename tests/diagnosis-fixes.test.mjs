@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process';
 import { buildFixes, validAdjustment, validateFixContext, fixCommand, FIX_TTL_MS } from '../server/diagnosisFixes.js';
 
 const baseline = () => ({model:'qidi', print_state:'printing', filename:'part.gcode', active_extruder:'extruder', print_duration_sec:100, print_total_duration_sec:100, captured_at:Date.now(), speed_factor_pct:100, flow_pct:100, fan_pct:60, filament_type:'PLA', z_mm:2, first_layer_height:0.2});
-const parsed = (control='speed', value=90, category='ghosting') => ({ overall_severity:'warning', issues:[{category,severity:'moderate',description:'Visible ripples beside the edge',suggestion:'Try a small adjustment'}], control_suggestions:[{control,value,issue_category:category,reason:'Visible ringing suggests trying a modest speed reduction.'}] });
+const parsed = (control='speed', value=90, category='ghosting') => ({ overall_severity:'warning', issues:[{category,severity:'moderate',evidence_region:'printed_part',description:'Visible ripples beside the edge',suggestion:'Try a small adjustment'}], control_suggestions:[{control,value,issue_category:category,reason:'Visible ringing suggests trying a modest speed reduction.'}] });
 const options = () => ({printerId:'qidi',diagnosisId:1});
 
 test('proposals require reliable live data and bounded structured recommendations',()=>{
@@ -27,6 +27,22 @@ test('proposals require reliable live data and bounded structured recommendation
   assert.equal(validAdjustment('flow',107,105,baseline(),'over_extrusion'),false);
   assert.throws(()=>fixCommand('speed','90\nM112'));
   assert.throws(()=>fixCommand('heater',250));
+});
+
+test('startup purge and uncertain image regions cannot produce live fixes', () => {
+  const result = parsed('flow', 98, 'over_extrusion');
+  for (const region of ['startup_purge', 'uncertain', undefined]) {
+    const issues = [{ ...result.issues[0], evidence_region: region }];
+    assert.deepEqual(buildFixes({ ...result, issues }, baseline(), options()), []);
+  }
+  for (const layer of [0, 1, 2]) {
+    assert.deepEqual(buildFixes(result, { ...baseline(), current_layer: layer }, options()), []);
+  }
+  assert.deepEqual(buildFixes(result, { ...baseline(), first_layer_height: null }, options()), []);
+  const fix = buildFixes(result, { ...baseline(), current_layer: 3 }, options())[0];
+  assert.ok(fix);
+  assert.throws(() => validateFixContext(fix, { ...baseline(), current_layer: 1 }));
+  assert.throws(() => validateFixContext({ ...fix, baseline: baseline() }, baseline()));
 });
 
 test('nozzle fixes respect material, direction, heater limits and settled telemetry',()=>{
@@ -64,10 +80,11 @@ let speed=100, flow=100, fan=60, filename='part.gcode', printState='printing', r
 let nozzleTarget=205, nozzleActual=205, material='PLA';
 const scripts=[];
 let commandMode='normal';
+let visionRequest;
 const fake=http.createServer(async(req,res)=>{
   res.setHeader('Content-Type','application/json');
   const status={ print_stats:{state:printState,filename,print_duration:100,total_duration:100},toolhead:{extruder:'extruder'},gcode_move:{speed_factor:speed/100,extrude_factor:flow/100},extruder:{temperature:nozzleActual,target:nozzleTarget},heater_bed:{temperature:60,target:60},'output_pin fan0':{value:fan/100},motion_report:{live_position:[0,0,2]},configfile:{config:{extruder:{nozzle_diameter:0.4,min_temp:0,max_temp:300,min_extrude_temp:170}}}};
-  if(req.url==='/api/generate') { for await(const _ of req) {} return res.end(JSON.stringify({response:JSON.stringify(recommendation)})); }
+  if(req.url==='/api/generate') { let body=''; for await(const chunk of req) body+=chunk; visionRequest=JSON.parse(body); return res.end(JSON.stringify({response:JSON.stringify(recommendation)})); }
   if(req.url==='/snapshot') { res.setHeader('Content-Type','image/jpeg'); return res.end(Buffer.from([255,216,255,217])); }
   if(req.url==='/printer/objects/list') return res.end(JSON.stringify({result:{objects:Object.keys(status)}}));
   if(req.url.startsWith('/printer/objects/query')) return res.end(JSON.stringify({result:{status}}));
@@ -100,6 +117,16 @@ test('reviewed fix API applies once, verifies delayed changes, logs and undoes w
   let output='';child.stdout.on('data',b=>output+=b);child.stderr.on('data',b=>output+=b);
   await new Promise((resolve,reject)=>{let n=0;const t=setInterval(()=>{if(output.includes('running on port')){clearInterval(t);resolve();}else if(++n>100||child.exitCode!==null){clearInterval(t);reject(new Error(output));}},30);});
   base=`http://127.0.0.1:${output.match(/running on port (\d+)/)[1]}`;
+  const purge = parsed('flow', 98, 'over_extrusion');
+  purge.issues[0].evidence_region = 'startup_purge';
+  recommendation = purge;
+  const startup = await diagnose();
+  assert.match(visionRequest.system, /QIDI X-Plus 3.*right-angle/);
+  assert.deepEqual(startup.issues, []);
+  assert.deepEqual(startup.fixes, []);
+  assert.equal(startup.overall_severity, 'ok');
+  assert.deepEqual(scripts, []);
+  recommendation = parsed();
   const diagnosis=await diagnose();assert.ok(diagnosis.id);assert.equal(diagnosis.fixes.length,1);
   assert.equal(diagnosis.printer_context.filament_type,'PLA');
   let review=await json(`/api/printers/qidi/diagnose/${diagnosis.id}/fixes`);const fix=review.data.fixes[0];assert.equal(fix.before,100);assert.equal(fix.after,90);

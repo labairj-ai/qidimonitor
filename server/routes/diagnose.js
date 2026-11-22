@@ -59,6 +59,8 @@ Only for an actual live QIDI print with reliable context, you may suggest ONE sm
 Do not propose changes for severe or critical issues, spaghetti, warping, bed adhesion failure, or layer delamination. Those need user inspection. - nozzle: nozzle TARGET in degrees Celsius, not the measured temperature. Change by at most 10 C per fix, only with known PLA/PETG/ABS/ASA/TPU and a settled nozzle (actual within 5 C of its current target). Decrease for stringing, blob_zit, or over_extrusion; increase only for under_extrusion. Final ranges: PLA 200-210 C, PETG 230-245 C, ABS/ASA 235-255 C, TPU 210-225 C, also respecting reported hardware limits. Never turn the heater off. If recommending a nozzle adjustment in the advice and these bounds permit it, include a matching nozzle control_suggestion so it can be reviewed and applied.
 Do not propose retraction, motion, calibration, bed/chamber temperature, other heater, or power commands. Never invent missing readings. If uncertain, use [] and give textual advice only. A suggestion is an experiment to review, not a guaranteed fix.`;
 
+const QIDI_STARTUP_GUIDANCE = `The QIDI X-Plus 3 intentionally extrudes a nozzle-prime/purge line before printing the model. It can look like an L or right-angle pair of straight beads off to the side of the build plate. Its position varies with the sliced job and camera orientation, and it can remain visible for the entire print. Exclude it in every image, including follow-up comparisons. Its presence, excess bead at the turn, or isolated strands along it are not evidence of stringing, oozing, blobs, or over-extrusion on the model. Never recommend a settings change based on this pattern. Base defect findings on visible evidence on or between model features, away from the prime line. If you cannot distinguish the prime line from the model, withhold any control suggestion. If only the prime line is visible, say the model is not yet assessable and return no issues or control suggestions. Set evidence_region to printed_part only for a defect identifiable on the printed part or between model features, startup_purge for the intentional extrusion, or uncertain otherwise. Only printed_part evidence can support a control suggestion. The monitor waits until after the first two layers before offering live changes.`;
+
 const DIAGNOSIS_SCHEMA = {
   type: 'object', additionalProperties: false,
   required: ['overall_severity','issues','summary','control_suggestions','comparison'],
@@ -67,10 +69,11 @@ const DIAGNOSIS_SCHEMA = {
     summary: { type: 'string' },
     comparison:{type:'object',required:['reference_id','clear_view'],properties:{reference_id:{type:'string'},clear_view:{type:'boolean'}}},
     issues: { type: 'array', items: { type: 'object', additionalProperties: false,
-      required: ['category','severity','description','suggestion','observation','new_evidence'], properties: {
+      required: ['category','severity','description','suggestion','observation','new_evidence','evidence_region'], properties: {
         category: { type: 'string', enum: ['stringing','layer_delamination','warping','under_extrusion','over_extrusion','elephant_foot','ghosting','spaghetti','blob_zit','bed_adhesion'] },
         severity: { type: 'string', enum: ['minor','moderate','severe'] },
         description: { type: 'string' }, suggestion: { type: 'string' },
+        evidence_region: { type: 'string', enum: ['printed_part', 'startup_purge', 'uncertain'] },
         observation:{type:'string',enum:['new','existing','uncertain']},new_evidence:{type:'string'},
       } } },
     control_suggestions: { type: 'array', maxItems: 1, items: { type: 'object', additionalProperties: false,
@@ -97,7 +100,7 @@ async function runDiagnosis({ imageBuffer, imagePath, printFile, autoTriggered, 
 
   const body = {
     model,
-    system: SYSTEM_PROMPT + `\nPrinter: ${config.name} (${config.model}).`,
+    system: SYSTEM_PROMPT + `\nPrinter: ${config.name} (${config.model}).` + (config.model === 'qidi' ? `\n${QIDI_STARTUP_GUIDANCE}` : ''),
     prompt: userText + (followup ? `\nFOLLOW-UP AFTER CORRECTION: ${followup.note}\nPreviously corrected categories: ${followup.categories.join(', ')}. Reference ID: ${followup.reference_id}. ${followup.ready ? 'Two images are supplied: FIRST is the saved post-fix baseline; SECOND is the current print. Compare the same visible surfaces. Report a previously corrected issue only if NEW material deposited above baseline Z '+followup.reference_z+'mm shows new defects. Existing strings/marks remain on the object and are NOT new failure evidence. Mark those observation existing. If motion, occlusion, lighting, or viewpoint prevents comparison, set clear_view false and observation uncertain. For genuinely new defects, give precise new_evidence tied to the changed region and matching reference_id in comparison.' : 'No reliable temporal comparison is available yet. Do not recommend another fix for previously corrected categories. Mark their observation existing or uncertain.'}` : '\nThis is an initial assessment; no post-fix baseline exists. Set comparison reference_id to an empty string.') + ((config.auto_nozzle_enabled==='1' || config.auto_flow_enabled==='1') ? '\nAutomatic application is enabled for eligible '+[config.auto_nozzle_enabled==='1'?'nozzle':'',config.auto_flow_enabled==='1'?'flow':''].filter(Boolean).join(' and ')+'. Prefer those controls only when justified by evidence and within the stated limits. Never invent a recommendation to force a change.' : ''),
     images: [...(followup?.images || []),base64],
     stream: false,
@@ -132,6 +135,18 @@ async function runDiagnosis({ imageBuffer, imagePath, printFile, autoTriggered, 
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Diagnosis response must be an object');
   if (!Array.isArray(parsed.issues) || parsed.issues.some(i => !i || typeof i.category !== 'string' || typeof i.description !== 'string' || typeof i.suggestion !== 'string' || !['minor','moderate','severe'].includes(i.severity))) parsed.control_suggestions = [];
   parsed.issues = Array.isArray(parsed.issues) ? parsed.issues.filter(i => i && typeof i.category === 'string' && typeof i.description === 'string' && typeof i.suggestion === 'string' && ['minor','moderate','severe'].includes(i.severity)) : [];
+  if (config.model === 'qidi') {
+    const purgeCategories = new Set(parsed.issues.filter(issue => issue.evidence_region === 'startup_purge').map(issue => issue.category));
+    parsed.issues = parsed.issues.filter(issue => issue.evidence_region !== 'startup_purge');
+    if (purgeCategories.size && Array.isArray(parsed.control_suggestions)) {
+      parsed.control_suggestions = parsed.control_suggestions.filter(suggestion => !purgeCategories.has(suggestion?.issue_category));
+    }
+    if (purgeCategories.size && !parsed.issues.length) {
+      parsed.control_suggestions = [];
+      parsed.overall_severity = 'ok';
+      parsed.summary = 'The QIDI startup purge line is normal. No model defect was identified.';
+    }
+  }
   if(!uploaded) followup=refreshFollowup(followup,ctx,config);
   const filtered=filterFollowup(parsed,followup);parsed=filtered.parsed;
   const record = {
@@ -208,6 +223,8 @@ router.post('/diagnose/chat', async (req, res) => {
     'A vision AI just ran a diagnosis on their print. Answer questions about it conversationally and practically.',
     '',
   ];
+
+  if (config.model === 'qidi') systemLines.push(QIDI_STARTUP_GUIDANCE);
 
   if (context) {
     systemLines.push(`DIAGNOSIS: ${(context.overall_severity || 'unknown').toUpperCase()}`);

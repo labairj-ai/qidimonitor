@@ -63,6 +63,7 @@ export async function getPrinterContext(config) {
       printer_name: config.name, model: config.model, toolheads, active_extruder: activeExtruder,
       print_state: status.print_stats?.state,
       filename,
+      current_layer: status.print_stats?.info?.current_layer ?? null,
       progress_pct: status.display_status?.progress != null ? Math.round(status.display_status.progress * 100) : null,
       print_duration_min: status.print_stats?.print_duration ? Math.round(status.print_stats.print_duration / 60) : null,
       print_duration_sec: status.print_stats?.print_duration ?? null,
@@ -139,6 +140,7 @@ export function formatContextForPrompt(ctx) {
   if (ctx.speed_factor_pct != null && ctx.speed_factor_pct !== 100) lines.push(`  Speed override: ${ctx.speed_factor_pct}%`);
   if (ctx.flow_pct != null && ctx.flow_pct !== 100) lines.push(`  Flow override: ${ctx.flow_pct}%`);
   if (ctx.pressure_advance != null) lines.push(`  Pressure advance: ${ctx.pressure_advance}`);
+  if (ctx.current_layer != null) lines.push(`  Current layer: ${ctx.current_layer}`);
   if (ctx.z_mm != null) lines.push(`  Z height: ${ctx.z_mm}mm`);
 
   if (ctx.layer_height) lines.push(`  Layer height: ${ctx.layer_height}mm`);

@@ -138,6 +138,8 @@ Manual targets allow 180–300°C, narrowed by the printer's reported minimum/ma
 
 Open **QIDI → Monitor → AI Diagnosis** and run **Diagnose Now**. Eligible new diagnoses show **Review a suggested adjustment**, with the setting at diagnosis, proposed value with % or °C units, reason, and **Apply fix** button. Nozzle and flow changes auto-apply when their switches are enabled; other changes require Apply fix. After applying, live readings confirm the result and the manual controls refresh. **Recent adjustments** preserves the log and **Undo** across page reloads and newer diagnoses. Automatic monitoring results appear in the diagnosis panel within fifteen seconds, and use the same auto-apply preferences.
 
+The QIDI X-Plus 3 lays down an off-to-the-side, right-angle purge line to prime the nozzle before printing the model. Diagnosis and follow-up chat treat this line as normal, including when it remains visible later in the print. A live adjustment requires visible defect evidence on or between model features. The server waits until after the first two layers, using the reported layer number or nozzle height and slicer layer heights when the layer number is unavailable. Uncertain image evidence or insufficient startup telemetry blocks live adjustments. [OrcaSlicer QIDI X3 startup G-code](https://github.com/OrcaSlicer/OrcaSlicer/blob/main/resources/profiles/Qidi/machine/fdm_qidi_x3_common.json)
+
 The first version supports one modest adjustment per diagnosis on the QIDI only:
 
 | Control | Limits |
