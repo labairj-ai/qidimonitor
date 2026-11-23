@@ -38,6 +38,11 @@ function PrinterContextPanel({ ctx }) {
         Printer State at Diagnosis
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 32px' }}>
+        {ctx.print_reference && (
+          <ContextRow label="Print reference" value={ctx.print_reference.status === 'used'
+            ? `Active G-code through Z ${ctx.print_reference.z_mm.toFixed(2)} mm`
+            : ctx.print_reference.status === 'preparing' ? 'Download in progress at diagnosis' : 'Unavailable'} />
+        )}
         <ContextRow label="Print state" value={ctx.print_state} />
         <ContextRow label="Progress" value={ctx.progress_pct != null ? `${ctx.progress_pct}%` : null} />
         <ContextRow label="Duration" value={ctx.print_duration_min != null ? `${ctx.print_duration_min} min` : null} />
@@ -118,7 +123,7 @@ export default function History({ latestId }) {
             <div style={{ flex: 1 }}>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                 <span style={{ fontWeight: 700, fontSize: 13, color: SEV_COLORS[r.overall_severity] }}>
-                  {r.overall_severity === 'ok' ? 'OK' : r.overall_severity === 'warning' ? 'Warning' : 'Critical'}
+                  {r.printer_context?.print_reference?.inconclusive ? 'Inconclusive' : r.overall_severity === 'ok' ? 'OK' : r.overall_severity === 'warning' ? 'Warning' : 'Critical'}
                 </span>
                 {r.auto_triggered && <span style={{ fontSize: 11, color: 'var(--muted)', background: 'var(--surface2)', padding: '1px 6px', borderRadius: 4 }}>auto</span>}
                 {r.issues?.length > 0 && (
@@ -168,7 +173,7 @@ export default function History({ latestId }) {
                   })}
                 </div>
               ) : (
-                <p style={{ fontSize: 13, color: 'var(--ok)', marginBottom: 12 }}>No issues detected</p>
+                <p style={{ fontSize: 13, color: 'var(--ok)', marginBottom: 12 }}>{r.printer_context?.print_reference?.inconclusive ? 'The camera view did not confirm a defect.' : 'No issues detected'}</p>
               )}
               <PrinterContextPanel ctx={r.printer_context} />
             </div>

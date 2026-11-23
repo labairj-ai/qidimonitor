@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process';
 import { buildFixes, validAdjustment, validateFixContext, fixCommand, FIX_TTL_MS } from '../server/diagnosisFixes.js';
 
 const baseline = () => ({model:'qidi', print_state:'printing', filename:'part.gcode', active_extruder:'extruder', print_duration_sec:100, print_total_duration_sec:100, captured_at:Date.now(), speed_factor_pct:100, flow_pct:100, fan_pct:60, filament_type:'PLA', z_mm:2, first_layer_height:0.2});
-const parsed = (control='speed', value=90, category='ghosting') => ({ overall_severity:'warning', issues:[{category,severity:'moderate',evidence_region:'printed_part',description:'Visible ripples beside the edge',suggestion:'Try a small adjustment'}], control_suggestions:[{control,value,issue_category:category,reason:'Visible ringing suggests trying a modest speed reduction.'}] });
+const parsed = (control='speed', value=90, category='ghosting') => ({ overall_severity:'warning', issues:[{category,severity:'moderate',evidence_region:'printed_part',description:'Visible ripples beside the edge',geometry_evidence:{evidence:'visible_defect',detail:'Repeated ridges are visible directly beside the front edge.'},suggestion:'Try a small adjustment'}], control_suggestions:[{control,value,issue_category:category,reason:'Visible ringing suggests trying a modest speed reduction.'}] });
 const options = () => ({printerId:'qidi',diagnosisId:1});
 
 test('proposals require reliable live data and bounded structured recommendations',()=>{
@@ -81,14 +81,17 @@ let nozzleTarget=205, nozzleActual=205, material='PLA';
 const scripts=[];
 let commandMode='normal';
 let visionRequest;
+const printedGcode = 'G90\nM83\nG1 Z0.2\nG1 X20 E1\nG1 Y20 E1\n';
+const gcode = printedGcode + 'G1 Z0.4\nG1 X0 E1\n';
 const fake=http.createServer(async(req,res)=>{
   res.setHeader('Content-Type','application/json');
-  const status={ print_stats:{state:printState,filename,print_duration:100,total_duration:100},toolhead:{extruder:'extruder'},gcode_move:{speed_factor:speed/100,extrude_factor:flow/100},extruder:{temperature:nozzleActual,target:nozzleTarget},heater_bed:{temperature:60,target:60},'output_pin fan0':{value:fan/100},motion_report:{live_position:[0,0,2]},configfile:{config:{extruder:{nozzle_diameter:0.4,min_temp:0,max_temp:300,min_extrude_temp:170}}}};
+  const status={ virtual_sdcard:{file_position:Buffer.byteLength(printedGcode)},print_stats:{state:printState,filename,print_duration:100,total_duration:100},toolhead:{extruder:'extruder'},gcode_move:{speed_factor:speed/100,extrude_factor:flow/100},extruder:{temperature:nozzleActual,target:nozzleTarget},heater_bed:{temperature:60,target:60},'output_pin fan0':{value:fan/100},motion_report:{live_position:[0,0,2]},configfile:{config:{extruder:{nozzle_diameter:0.4,min_temp:0,max_temp:300,min_extrude_temp:170}}}};
   if(req.url==='/api/generate') { let body=''; for await(const chunk of req) body+=chunk; visionRequest=JSON.parse(body); return res.end(JSON.stringify({response:JSON.stringify(recommendation)})); }
   if(req.url==='/snapshot') { res.setHeader('Content-Type','image/jpeg'); return res.end(Buffer.from([255,216,255,217])); }
   if(req.url==='/printer/objects/list') return res.end(JSON.stringify({result:{objects:Object.keys(status)}}));
   if(req.url.startsWith('/printer/objects/query')) return res.end(JSON.stringify({result:{status}}));
-  if(req.url.startsWith('/server/files/metadata')) return res.end(JSON.stringify({result:{filament_type:material,first_layer_height:0.2}}));
+  if(req.url.startsWith('/server/files/metadata')) return res.end(JSON.stringify({result:{filament_type:material,first_layer_height:0.2,size:Buffer.byteLength(gcode),modified:1}}));
+  if(req.url==='/server/files/gcodes/part.gcode') return res.end(gcode);
   if(req.url==='/printer/gcode/script') {
     let body='';for await(const chunk of req) body+=chunk;
     const script=JSON.parse(body).script; scripts.push(script);
@@ -127,8 +130,19 @@ test('reviewed fix API applies once, verifies delayed changes, logs and undoes w
   assert.equal(startup.overall_severity, 'ok');
   assert.deepEqual(scripts, []);
   recommendation = parsed();
+  recommendation.issues[0].geometry_evidence = { evidence: 'uncertain', detail: 'The nozzle hides the suspected gap in the part.' };
+  const ambiguous = await diagnose();
+  assert.deepEqual(ambiguous.issues, []);
+  assert.deepEqual(ambiguous.fixes, []);
+  assert.equal(ambiguous.printer_context.print_reference.inconclusive, true);
+  assert.deepEqual(scripts, []);
+  recommendation = parsed();
   const diagnosis=await diagnose();assert.ok(diagnosis.id);assert.equal(diagnosis.fixes.length,1);
   assert.equal(diagnosis.printer_context.filament_type,'PLA');
+  assert.deepEqual(diagnosis.printer_context.print_reference, { status:'used', z_mm:0.2, inconclusive:false });
+  assert.equal(visionRequest.images.length, 2);
+  assert.equal(Buffer.from(visionRequest.images[0], 'base64').subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
+  assert.equal(visionRequest.images[1], Buffer.from([255,216,255,217]).toString('base64'));
   let review=await json(`/api/printers/qidi/diagnose/${diagnosis.id}/fixes`);const fix=review.data.fixes[0];assert.equal(fix.before,100);assert.equal(fix.after,90);
   assert.equal((await json(`/api/printers/u1/diagnose/${diagnosis.id}/fixes`)).status,404);
   assert.equal((await json(`/api/printers/u1/diagnose/fixes/${fix.id}/apply`,post)).status,404);

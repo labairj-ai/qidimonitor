@@ -9,7 +9,7 @@ export async function getPrinterContext(config) {
     const listRes = await fetch(`${base}/printer/objects/list`, { signal: AbortSignal.timeout(5000) });
     if (!listRes.ok) return null;
     const objects = (await listRes.json()).result?.objects || [];
-    const wanted = objects.filter(n => /^(print_stats|display_status|toolhead|gcode_move|extruder\d*|heater_bed|heater_generic hot|output_pin fan0|fan|filament_switch_sensor fila|motion_report)$/.test(n));
+    const wanted = objects.filter(n => /^(print_stats|virtual_sdcard|display_status|toolhead|gcode_move|extruder\d*|heater_bed|heater_generic hot|output_pin fan0|fan|filament_switch_sensor fila|motion_report)$/.test(n));
     const [objRes, cfgRes] = await Promise.all([
       fetch(
         `${base}/printer/objects/query?${wanted.map(encodeURIComponent).join("&")}`,
@@ -63,6 +63,9 @@ export async function getPrinterContext(config) {
       printer_name: config.name, model: config.model, toolheads, active_extruder: activeExtruder,
       print_state: status.print_stats?.state,
       filename,
+      gcode_position: status.virtual_sdcard?.file_position,
+      gcode_size: fileMeta?.size,
+      gcode_revision: fileMeta?.modified ?? fileMeta?.uuid,
       current_layer: status.print_stats?.info?.current_layer ?? null,
       progress_pct: status.display_status?.progress != null ? Math.round(status.display_status.progress * 100) : null,
       print_duration_min: status.print_stats?.print_duration ? Math.round(status.print_stats.print_duration / 60) : null,

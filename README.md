@@ -2,7 +2,7 @@
 
 A shared 3D-printing dashboard for the **QIDI X-Plus 3** and **Snapmaker U1**. View both printers together, or open a printer's Monitor, Files, and Settings pages. Each printer has independent configuration, camera URLs, diagnoses, files, and automatic monitoring.
 
-The History tab has been removed. Existing saved diagnoses and slicing jobs remain in the database.
+On each printer’s Monitor page, **Recent adjustments** appears above **AI Diagnosis** and shows the date and time of each adjustment. **Diagnosis History** shows the newest 10 results first, with Previous and Next for older results.
 
 ## Current deployment
 
@@ -72,7 +72,7 @@ Each printer has its own saved vision/chat settings. Existing values are preserv
 
 The current vision configuration uses local Ollama at `http://127.0.0.1:11434` with `qwen2.5vl:7b`. Configure a different reachable Ollama endpoint or vision model in Settings if required. Localhost refers to the Mac mini running the backend, not the browser's device.
 
-Vision diagnosis uses Ollama `/api/generate` with an image and printer context. Follow-up chat uses an OpenAI-compatible `/v1/chat/completions` endpoint; chat URL/model settings are separate. The vision context window is 8192 tokens. Diagnosis failures are reported without issuing printer commands.
+Vision diagnosis uses Ollama `/api/generate` with camera images, printer context, and an expected print reference when available. Follow-up chat uses an OpenAI-compatible `/v1/chat/completions` endpoint; chat URL/model settings are separate. The vision context window is 8192 tokens. Diagnosis failures are reported without issuing printer commands.
 
 ## QIDI slicing
 
@@ -133,6 +133,14 @@ During an active or paused QIDI print, open **Monitor → Print status → Nozzl
 Manual targets allow 180–300°C, narrowed by the printer's reported minimum/maximum heater and minimum extrusion temperatures (with a 5°C margin). The detected material baseline is shown as a reference; manual entry can follow the filament manufacturer's settings rather than the narrower AI-fix range. Missing heater limits disable the control. Idle preheating and heater-off actions are not supported by this control.
 
 `POST /api/printers/qidi/printer/nozzle` accepts `target`, `expected_target`, `extruder`, and `filename`. Before sending a single named-extruder command, it checks the current print, toolhead, target, and hardware limits. Target confirmation tolerates slow command acknowledgments; it does not wait for actual temperature to settle or retry an uncertain command. Simulated-printer tests cover invalid/stale targets, printer isolation, printing, paused prints, and stopped-print rejection. The manual control is QIDI-only for now.
+
+## Compare the camera with the active print
+
+For live diagnoses, QIDI Monitor reads the active filename and G-code position from Moonraker. It renders extrusion paths through that position, including planned supports and brim, and sends the render with the camera snapshot. Amber marks the latest deposition height. The render uses an oblique view, so the model compares visible landmarks and accounts for the camera angle and occlusion. Shape-related findings require evidence of a visible mismatch. An inconclusive view cannot trigger an adjustment.
+
+The first check may run while the G-code downloads. The diagnosis reports whether it used a G-code reference, is waiting for a download, or has no reference. Uploaded photos and live checks without a usable reference are assessed from visible evidence. The current renderer supports linear extrusion paths in G-code files up to 32 MiB.
+
+The app keeps each active file in memory for later checks. It clears the cache and cancels any pending download when the job finishes or is canceled, even with the browser closed. Diagnosis history remains available.
 
 ## Diagnosis fixes: automatic nozzle/flow and reviewed adjustments
 

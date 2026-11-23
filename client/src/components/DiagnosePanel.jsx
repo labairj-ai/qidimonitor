@@ -320,12 +320,21 @@ export default function DiagnosePanel({ config, onResult, latestResult }) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <span style={{ fontWeight: 700, fontSize: 16, color: result.followup && !result.issues?.length ? 'var(--muted)' : SEVERITY_COLORS[result.overall_severity] }}>
-                {result.followup && !result.issues?.length ? 'Follow-up: no confirmed new issues' : result.overall_severity === 'ok' ? 'Print looks good' :
+                {result.printer_context?.print_reference?.inconclusive ? 'Inconclusive camera view' : result.followup && !result.issues?.length ? 'Follow-up: no confirmed new issues' : result.overall_severity === 'ok' ? 'Print looks good' :
                  result.overall_severity === 'warning' ? 'Issues detected' : 'Critical issues'}
               </span>
-              {!(result.followup && !result.issues?.length) && <SeverityChip sev={result.overall_severity} />}
+              {!result.printer_context?.print_reference?.inconclusive && !(result.followup && !result.issues?.length) && <SeverityChip sev={result.overall_severity} />}
             </div>
 
+            {result.printer_context?.print_reference && (
+              <p style={{ color: 'var(--muted)', fontSize: 12 }}>
+                {result.printer_context.print_reference.status === 'used'
+                  ? `Compared with active G-code through Z ${result.printer_context.print_reference.z_mm.toFixed(2)} mm`
+                  : result.printer_context.print_reference.status === 'preparing'
+                    ? 'Downloading G-code for a future comparison'
+                    : 'Print geometry reference unavailable'}
+              </p>
+            )}
             {result.followup && <div className="card" style={{fontSize:13}}><strong>Follow-up after correction</strong><p>{result.followup.note}</p><p style={{color:'var(--muted)',marginTop:6}}>Previously corrected: {result.followup.categories.map(c=>ISSUE_LABELS[c] || c).join(', ')}. Existing marks are excluded from new-issue findings.</p></div>}
             {result.summary && (!result.followup || result.issues?.length > 0) && (
               <p style={{ fontSize: 13, color: 'var(--muted)' }}>{result.summary}</p>

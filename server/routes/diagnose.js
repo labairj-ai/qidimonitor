@@ -11,6 +11,7 @@ import { AUTO_FLAGS, autoApplyFixes } from '../fixService.js';
 import { prepareFollowup, filterFollowup, refreshFollowup } from '../correctionMemory.js';
 import { saveFixes } from '../fixStore.js';
 import { getPrinterContext, formatContextForPrompt } from '../printerContext.js';
+import { filterPrintEvidence, getPrintReference } from '../printReference.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SNAPSHOTS_DIR = process.env.SNAPSHOTS_DIR || path.join(__dirname, '..', '..', 'snapshots');
@@ -50,6 +51,7 @@ overall_severity must be one of: ok, warning, critical
 severity for each issue must be one of: minor, moderate, severe
 description must be a specific observation of what you see in the image that led to this diagnosis — be concrete about location and appearance, not generic.
 suggestion must be an actionable fix.
+For each issue, report geometry_evidence. Use visible_defect only for a defect directly identifiable in the live image and describe its location and physical evidence. Use reference_mismatch when the defect rests on a clear difference between the expected toolpaths and the photographed part, and describe the matching landmark and the visible difference. Use uncertain when the reference is missing, the views cannot be compared, or the suspected defect could be intentional geometry. A filename alone provides no evidence of intended geometry. Leave out uncertain issues and explain any important limitation in the summary.
 If the print looks good, return overall_severity "ok", an empty issues array, and empty control_suggestions.
 
 REVIEWED CONTROL SUGGESTIONS (optional, never commands):
@@ -71,11 +73,15 @@ const DIAGNOSIS_SCHEMA = {
     summary: { type: 'string' },
     comparison:{type:'object',required:['reference_id','clear_view'],properties:{reference_id:{type:'string'},clear_view:{type:'boolean'}}},
     issues: { type: 'array', items: { type: 'object', additionalProperties: false,
-      required: ['category','severity','description','suggestion','observation','new_evidence','evidence_region'], properties: {
+      required: ['category','severity','description','suggestion','observation','new_evidence','evidence_region','geometry_evidence'], properties: {
         category: { type: 'string', enum: ['stringing','layer_delamination','warping','under_extrusion','over_extrusion','elephant_foot','ghosting','spaghetti','blob_zit','bed_adhesion','bed_temperature'] },
         severity: { type: 'string', enum: ['minor','moderate','severe'] },
         description: { type: 'string' }, suggestion: { type: 'string' },
         evidence_region: { type: 'string', enum: ['printed_part', 'startup_purge', 'uncertain'] },
+        geometry_evidence: { type: 'object', additionalProperties: false, required: ['evidence', 'detail'], properties: {
+          evidence: { type: 'string', enum: ['visible_defect', 'reference_mismatch', 'uncertain'] },
+          detail: { type: 'string' },
+        } },
         observation:{type:'string',enum:['new','existing','uncertain']},new_evidence:{type:'string'},
       } } },
     control_suggestions: { type: 'array', maxItems: 1, items: { type: 'object', additionalProperties: false,
@@ -91,9 +97,14 @@ async function runDiagnosis({ imageBuffer, imagePath, printFile, autoTriggered, 
   const model = config.ollama_model || 'qwen2.5-vl:7b';
   const base64 = imageBuffer.toString('base64');
 
-  // Fetch printer context in parallel with image encoding
   const ctx = await getPrinterContext(config);
   const contextText = formatContextForPrompt(ctx);
+  const sameJob = !printFile || printFile === ctx?.filename;
+  const printReference = !uploaded && sameJob ? await getPrintReference(ctx, config) : null;
+  const reference = printReference?.image ? printReference : null;
+  const geometryPrompt = reference
+    ? `\nThe FIRST image is an oblique render of the active G-code up to the printer's reported file position. It includes extrusion paths for the part, planned supports, brim, and purge moves. Amber marks the latest deposition height (${reference.z.toFixed(2)} mm). The render is schematic and has a different camera angle. Compare recognizable landmarks and allow for paths queued at the frontier. Ignore differences caused by view angle, hidden surfaces, internal paths, supports, or the nozzle. Report a geometry mismatch only when the corresponding region is clearly visible.`
+    : '\nNo expected geometry reference is available. Assess directly observable defects only. Do not infer a missing feature or bad shape from the filename or from how you expect the part to look.';
   let followup=uploaded?null:prepareFollowup(ctx,config,imageBuffer);
 
   const userText = contextText
@@ -104,8 +115,8 @@ async function runDiagnosis({ imageBuffer, imagePath, printFile, autoTriggered, 
   const body = {
     model,
     system: SYSTEM_PROMPT + `\nPrinter: ${config.name} (${config.model}).` + (config.model === 'qidi' ? `\n${QIDI_STARTUP_GUIDANCE}` : ''),
-    prompt: userText + (followup ? `\nFOLLOW-UP AFTER CORRECTION: ${followup.note}\nPreviously corrected categories: ${followup.categories.join(', ')}. Reference ID: ${followup.reference_id}. ${followup.ready ? 'Two images are supplied: FIRST is the saved post-fix baseline; SECOND is the current print. Compare the same visible surfaces. Report a previously corrected issue only if NEW material deposited above baseline Z '+followup.reference_z+'mm shows new defects. Existing strings/marks remain on the object and are NOT new failure evidence. Mark those observation existing. If motion, occlusion, lighting, or viewpoint prevents comparison, set clear_view false and observation uncertain. For genuinely new defects, give precise new_evidence tied to the changed region and matching reference_id in comparison.' : 'No reliable temporal comparison is available yet. Do not recommend another fix for previously corrected categories. Mark their observation existing or uncertain.'}` : '\nThis is an initial assessment; no post-fix baseline exists. Set comparison reference_id to an empty string.') + (automaticControls.length ? '\nAutomatic application is enabled for eligible '+automaticControls.join(', ')+'. Prefer those controls only when justified by evidence and within the stated limits. Never invent a recommendation to force a change.' : ''),
-    images: [...(followup?.images || []),base64],
+    prompt: userText + geometryPrompt + (followup ? `\nFOLLOW-UP AFTER CORRECTION: ${followup.note}\nPreviously corrected categories: ${followup.categories.join(', ')}. Reference ID: ${followup.reference_id}. ${followup.ready ? 'Of the camera images, the earlier one is the saved post-fix baseline and the last one is the live snapshot. Compare the same visible surfaces. Report a previously corrected issue only if NEW material deposited above baseline Z '+followup.reference_z+'mm shows new defects. Existing strings/marks remain on the object and are NOT new failure evidence. Mark those observation existing. If motion, occlusion, lighting, or viewpoint prevents comparison, set clear_view false and observation uncertain. For genuinely new defects, give precise new_evidence tied to the changed region and matching reference_id in comparison.' : 'No reliable temporal comparison is available yet. Do not recommend another fix for previously corrected categories. Mark their observation existing or uncertain.'}` : '\nThis is an initial assessment; no post-fix baseline exists. Set comparison reference_id to an empty string.') + (automaticControls.length ? '\nAutomatic application is enabled for eligible '+automaticControls.join(', ')+'. Prefer those controls only when justified by evidence and within the stated limits. Never invent a recommendation to force a change.' : ''),
+    images: [...(reference ? [reference.image] : []), ...(followup?.images || []), base64],
     stream: false,
     format: DIAGNOSIS_SCHEMA,
     options: { num_ctx: 8192, temperature: 0.1 },
@@ -150,6 +161,17 @@ async function runDiagnosis({ imageBuffer, imagePath, printFile, autoTriggered, 
       parsed.summary = 'The QIDI startup purge line is normal. No model defect was identified.';
     }
   }
+  if (!uploaded) {
+    parsed = filterPrintEvidence(parsed, reference);
+    if (!sameJob) parsed.control_suggestions = [];
+    if (ctx) {
+      ctx.print_reference = {
+        status: printReference?.status || 'unavailable',
+        ...(reference && { z_mm: reference.z }),
+        inconclusive: parsed.inconclusive,
+      };
+    }
+  }
   if(!uploaded) followup=refreshFollowup(followup,ctx,config);
   const filtered=filterFollowup(parsed,followup);parsed=filtered.parsed;
   const record = {
@@ -159,7 +181,7 @@ async function runDiagnosis({ imageBuffer, imagePath, printFile, autoTriggered, 
     print_file: printFile || ctx?.filename || null,
     issues: parsed.issues || [],
     overall_severity: ['ok','warning','critical'].includes(parsed.overall_severity) ? parsed.overall_severity : 'warning',
-    raw_response: raw,
+    raw_response: parsed.inconclusive ? JSON.stringify(parsed) : raw,
     auto_triggered: autoTriggered || false,
     summary: typeof parsed.summary === 'string' ? parsed.summary : '',
     printer_context: ctx,
