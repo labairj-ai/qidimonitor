@@ -1,4 +1,7 @@
 import React, { useState, useEffect } from 'react';
+import { usePrinterApi } from '../printerApi.jsx';
+
+const PAGE_SIZE = 10;
 
 const ISSUE_LABELS = {
   stringing: 'Stringing',
@@ -67,29 +70,44 @@ function PrinterContextPanel({ ctx }) {
   );
 }
 
-export default function History() {
+export default function History({ latestId }) {
+  const { apiFetch } = usePrinterApi();
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
   const [expanded, setExpanded] = useState(null);
+  const [page, setPage] = useState(0);
+  const firstPageLatestId = page === 0 ? latestId : undefined;
 
   useEffect(() => {
-    fetch('/api/history')
-      .then(r => r.json())
-      .then(data => { setRecords(data); setLoading(false); })
-      .catch(() => setLoading(false));
-  }, []);
+    let active = true;
+    setLoading(true);
+    setError('');
+    apiFetch(`/api/history?limit=${PAGE_SIZE + 1}&offset=${page * PAGE_SIZE}`)
+      .then(r => {
+        if (!r.ok) throw new Error('Unable to load diagnosis history.');
+        return r.json();
+      })
+      .then(data => { if (active) setRecords(data); })
+      .catch(() => { if (active) setError('Unable to load diagnosis history.'); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [apiFetch, page, firstPageLatestId]);
 
-  if (loading) return <p style={{ color: 'var(--muted)' }}>Loading…</p>;
-  if (!records.length) return <p style={{ color: 'var(--muted)' }}>No diagnoses yet. Run your first diagnosis from the Monitor tab.</p>;
+  const changePage = (nextPage) => {
+    setExpanded(null);
+    setLoading(true);
+    setPage(nextPage);
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-        <span style={{ fontWeight: 700 }}>Diagnosis History</span>
-        <span style={{ color: 'var(--muted)', fontSize: 13 }}>{records.length} records</span>
-      </div>
+      <h3 style={{ fontSize: 14 }}>Diagnosis History</h3>
+      {loading && <p role="status" style={{ color: 'var(--muted)' }}>Loading…</p>}
+      {error && <p role="alert" style={{ color: 'var(--crit)' }}>{error}</p>}
+      {!loading && !error && !records.length && <p style={{ color: 'var(--muted)' }}>No diagnoses on this page.</p>}
 
-      {records.map(r => (
+      {!loading && !error && records.slice(0, PAGE_SIZE).map(r => (
         <div
           key={r.id}
           className="card"
@@ -157,6 +175,13 @@ export default function History() {
           )}
         </div>
       ))}
+      {(page > 0 || (!loading && !error && records.length > PAGE_SIZE)) && (
+        <nav aria-label="Diagnosis history pages" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button className="btn-ghost" disabled={loading || page === 0} onClick={() => changePage(page - 1)}>Previous</button>
+          <span>Page {page + 1}</span>
+          <button className="btn-ghost" disabled={loading || !!error || records.length <= PAGE_SIZE} onClick={() => changePage(page + 1)}>Next</button>
+        </nav>
+      )}
     </div>
   );
 }

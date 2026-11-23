@@ -102,7 +102,7 @@ try {
 export function getConfig(id = 'qidi') {
   const row = db.prepare('SELECT settings FROM printers WHERE id=?').get(id);
   if (!row) throw new Error('Unknown printer');
-  return { auto_nozzle_enabled:'0', auto_flow_enabled:'0', ...JSON.parse(row.settings), id };
+  return { auto_nozzle_enabled:'0', auto_flow_enabled:'0', auto_bed_enabled:'0', ...JSON.parse(row.settings), id };
 }
 export function listPrinters() {
   return db.prepare('SELECT id FROM printers ORDER BY rowid').all().map(r => getConfig(r.id));
@@ -129,8 +129,8 @@ export function insertDiagnosis(record) {
   );
 }
 
-export function getHistory(limit = 50, printerId = 'qidi') {
-  return db.prepare('SELECT * FROM diagnoses WHERE printer_id=? ORDER BY id DESC LIMIT ?').all(printerId, limit).map(r => ({
+export function getHistory(limit = 50, printerId = 'qidi', offset = 0) {
+  return db.prepare('SELECT * FROM diagnoses WHERE printer_id=? ORDER BY id DESC LIMIT ? OFFSET ?').all(printerId, limit, offset).map(r => ({
     ...r,
     followup:getFollowup(r.id,printerId),
     issues: JSON.parse(r.issues || '[]'),

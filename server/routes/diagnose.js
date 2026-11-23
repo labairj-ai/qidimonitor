@@ -7,7 +7,7 @@ import { randomUUID } from 'crypto';
 import { fileURLToPath } from 'url';
 import { getConfig, insertDiagnosis, getHistory, saveFollowup } from '../db.js';
 import { buildFixes } from '../diagnosisFixes.js';
-import { autoApplyFixes } from '../fixService.js';
+import { AUTO_FLAGS, autoApplyFixes } from '../fixService.js';
 import { prepareFollowup, filterFollowup, refreshFollowup } from '../correctionMemory.js';
 import { saveFixes } from '../fixStore.js';
 import { getPrinterContext, formatContextForPrompt } from '../printerContext.js';
@@ -40,7 +40,8 @@ Look for these specific issues:
 - ghosting: ripple or shadow patterns caused by vibration
 - spaghetti: catastrophic failure, random plastic strands
 - blob_zit: localized blob or zit on a surface
-- bed_adhesion: poor first layer adhesion
+- bed_adhesion: a lifted, detached or failed first layer requiring inspection
+- bed_temperature: slight adhesion weakness on the model while it is still flat and attached, with a settled bed and a target below the known material range
 - ok: print looks healthy with no significant issues
 
 Return JSON matching the supplied schema. Use fields overall_severity, issues, summary, and control_suggestions. Base all observations on the actual image; do not invent towers, strings, or other features that are not visible. If the view is obstructed, blurry, or insufficient, explain that in summary and leave issues and control_suggestions empty.
@@ -57,7 +58,8 @@ Only for an actual live QIDI print with reliable context, you may suggest ONE sm
 - flow: percentage override, only change by 1 to 2 percentage points within 95 to 105; increase for under_extrusion, decrease for over_extrusion. Requires known PLA/PETG/ABS/ASA/TPU material.
 - fan: only increase part-cooling by at most 10 percentage points for stringing/blob_zit after the first two layer heights. Final ranges PLA 50-100, PETG 20-50, ABS/ASA/TPU 0-20. Requires known material and layer/Z context.
 Do not propose changes for severe or critical issues, spaghetti, warping, bed adhesion failure, or layer delamination. Those need user inspection. - nozzle: nozzle TARGET in degrees Celsius, not the measured temperature. Change by at most 10 C per fix, only with known PLA/PETG/ABS/ASA/TPU and a settled nozzle (actual within 5 C of its current target). Decrease for stringing, blob_zit, or over_extrusion; increase only for under_extrusion. Final ranges: PLA 200-210 C, PETG 230-245 C, ABS/ASA 235-255 C, TPU 210-225 C, also respecting reported hardware limits. Never turn the heater off. If recommending a nozzle adjustment in the advice and these bounds permit it, include a matching nozzle control_suggestion so it can be reviewed and applied.
-Do not propose retraction, motion, calibration, bed/chamber temperature, other heater, or power commands. Never invent missing readings. If uncertain, use [] and give textual advice only. A suggestion is an experiment to review, not a guaranteed fix.`;
+- bed: target in whole °C. For bed_temperature only, and only if the current measured bed is within 3°C of its target, the target is below the material range, and a rise of at most 5°C reaches that range. Bed ranges: PLA 55–65°C, PETG 70–85°C, ABS/ASA 90–110°C, TPU 40–55°C. Respect reported heater limits. Do not propose a decrease, a change during startup, or a change for lifting or failed adhesion. Never set the bed to zero.
+Do not propose retraction, motion, calibration, chamber temperature, other heater, or power commands. Never invent missing readings. If uncertain, use [] and give textual advice only. A suggestion is an experiment to review, not a guaranteed fix.`;
 
 const QIDI_STARTUP_GUIDANCE = `The QIDI X-Plus 3 intentionally extrudes a nozzle-prime/purge line before printing the model. It can look like an L or right-angle pair of straight beads off to the side of the build plate. Its position varies with the sliced job and camera orientation, and it can remain visible for the entire print. Exclude it in every image, including follow-up comparisons. Its presence, excess bead at the turn, or isolated strands along it are not evidence of stringing, oozing, blobs, or over-extrusion on the model. Never recommend a settings change based on this pattern. Base defect findings on visible evidence on or between model features, away from the prime line. If you cannot distinguish the prime line from the model, withhold any control suggestion. If only the prime line is visible, say the model is not yet assessable and return no issues or control suggestions. Set evidence_region to printed_part only for a defect identifiable on the printed part or between model features, startup_purge for the intentional extrusion, or uncertain otherwise. Only printed_part evidence can support a control suggestion. The monitor waits until after the first two layers before offering live changes.`;
 
@@ -70,7 +72,7 @@ const DIAGNOSIS_SCHEMA = {
     comparison:{type:'object',required:['reference_id','clear_view'],properties:{reference_id:{type:'string'},clear_view:{type:'boolean'}}},
     issues: { type: 'array', items: { type: 'object', additionalProperties: false,
       required: ['category','severity','description','suggestion','observation','new_evidence','evidence_region'], properties: {
-        category: { type: 'string', enum: ['stringing','layer_delamination','warping','under_extrusion','over_extrusion','elephant_foot','ghosting','spaghetti','blob_zit','bed_adhesion'] },
+        category: { type: 'string', enum: ['stringing','layer_delamination','warping','under_extrusion','over_extrusion','elephant_foot','ghosting','spaghetti','blob_zit','bed_adhesion','bed_temperature'] },
         severity: { type: 'string', enum: ['minor','moderate','severe'] },
         description: { type: 'string' }, suggestion: { type: 'string' },
         evidence_region: { type: 'string', enum: ['printed_part', 'startup_purge', 'uncertain'] },
@@ -78,8 +80,8 @@ const DIAGNOSIS_SCHEMA = {
       } } },
     control_suggestions: { type: 'array', maxItems: 1, items: { type: 'object', additionalProperties: false,
       required: ['control','value','issue_category','reason'], properties: {
-        control: { type: 'string', enum: ['speed','flow','fan','nozzle'] }, value: { type: 'integer' },
-        issue_category: { type: 'string', enum: ['stringing','under_extrusion','over_extrusion','ghosting','blob_zit'] }, reason: { type: 'string' },
+        control: { type: 'string', enum: ['speed','flow','fan','nozzle','bed'] }, value: { type: 'integer' },
+        issue_category: { type: 'string', enum: ['stringing','under_extrusion','over_extrusion','ghosting','blob_zit','bed_temperature'] }, reason: { type: 'string' },
       } } },
   },
 };
@@ -98,10 +100,11 @@ async function runDiagnosis({ imageBuffer, imagePath, printFile, autoTriggered, 
     ? `${uploaded ? 'This is an uploaded image. Do not suggest live control changes. ' : ''}Analyze this 3D print image and identify any quality issues.\n\n${contextText}`
     : 'Analyze this 3D print image and identify any quality issues.';
 
+  const automaticControls = Object.keys(AUTO_FLAGS).filter(control => config[AUTO_FLAGS[control]] === '1');
   const body = {
     model,
     system: SYSTEM_PROMPT + `\nPrinter: ${config.name} (${config.model}).` + (config.model === 'qidi' ? `\n${QIDI_STARTUP_GUIDANCE}` : ''),
-    prompt: userText + (followup ? `\nFOLLOW-UP AFTER CORRECTION: ${followup.note}\nPreviously corrected categories: ${followup.categories.join(', ')}. Reference ID: ${followup.reference_id}. ${followup.ready ? 'Two images are supplied: FIRST is the saved post-fix baseline; SECOND is the current print. Compare the same visible surfaces. Report a previously corrected issue only if NEW material deposited above baseline Z '+followup.reference_z+'mm shows new defects. Existing strings/marks remain on the object and are NOT new failure evidence. Mark those observation existing. If motion, occlusion, lighting, or viewpoint prevents comparison, set clear_view false and observation uncertain. For genuinely new defects, give precise new_evidence tied to the changed region and matching reference_id in comparison.' : 'No reliable temporal comparison is available yet. Do not recommend another fix for previously corrected categories. Mark their observation existing or uncertain.'}` : '\nThis is an initial assessment; no post-fix baseline exists. Set comparison reference_id to an empty string.') + ((config.auto_nozzle_enabled==='1' || config.auto_flow_enabled==='1') ? '\nAutomatic application is enabled for eligible '+[config.auto_nozzle_enabled==='1'?'nozzle':'',config.auto_flow_enabled==='1'?'flow':''].filter(Boolean).join(' and ')+'. Prefer those controls only when justified by evidence and within the stated limits. Never invent a recommendation to force a change.' : ''),
+    prompt: userText + (followup ? `\nFOLLOW-UP AFTER CORRECTION: ${followup.note}\nPreviously corrected categories: ${followup.categories.join(', ')}. Reference ID: ${followup.reference_id}. ${followup.ready ? 'Two images are supplied: FIRST is the saved post-fix baseline; SECOND is the current print. Compare the same visible surfaces. Report a previously corrected issue only if NEW material deposited above baseline Z '+followup.reference_z+'mm shows new defects. Existing strings/marks remain on the object and are NOT new failure evidence. Mark those observation existing. If motion, occlusion, lighting, or viewpoint prevents comparison, set clear_view false and observation uncertain. For genuinely new defects, give precise new_evidence tied to the changed region and matching reference_id in comparison.' : 'No reliable temporal comparison is available yet. Do not recommend another fix for previously corrected categories. Mark their observation existing or uncertain.'}` : '\nThis is an initial assessment; no post-fix baseline exists. Set comparison reference_id to an empty string.') + (automaticControls.length ? '\nAutomatic application is enabled for eligible '+automaticControls.join(', ')+'. Prefer those controls only when justified by evidence and within the stated limits. Never invent a recommendation to force a change.' : ''),
     images: [...(followup?.images || []),base64],
     stream: false,
     format: DIAGNOSIS_SCHEMA,
@@ -316,8 +319,10 @@ router.post('/diagnose/chat', async (req, res) => {
 
 // GET /api/history
 router.get('/history', (req, res) => {
-  const limit = Math.min(parseInt(req.query.limit) || 50, 200);
-  res.json(getHistory(limit, req.printerId));
+  const limit = Math.max(1, Math.min(parseInt(req.query.limit, 10) || 50, 200));
+  const requestedOffset = Number(req.query.offset);
+  const offset = Number.isSafeInteger(requestedOffset) && requestedOffset >= 0 ? requestedOffset : 0;
+  res.json(getHistory(limit, req.printerId, offset));
 });
 
 export { runDiagnosis };

@@ -1,9 +1,12 @@
+import { belongsToPrint } from '../diagnosisSession.mjs';
 import DiagnosisFixes from './DiagnosisFixes.jsx';
+import History from './History.jsx';
 import { usePrinterApi } from '../printerApi.jsx';
 import React, { useState, useRef, useEffect } from 'react';
 
 const SEVERITY_COLORS = { ok: 'var(--ok)', warning: 'var(--warn)', critical: 'var(--crit)' };
 const ISSUE_LABELS = {
+  bed_temperature: 'Bed temperature',
   stringing: 'Stringing',
   layer_delamination: 'Layer Delamination',
   warping: 'Warping',
@@ -209,25 +212,45 @@ export default function DiagnosePanel({ config, onResult, latestResult }) {
   const [error, setError] = useState(null);
   const [previewUrl, setPreviewUrl] = useState(null);
   const fileRef = useRef();
+  const contextRef = useRef(null);
+  const [printContext, setPrintContext] = useState(null);
   const latestRef = useRef(latestResult);
   const loadingRef = useRef(loading);
   latestRef.current = latestResult; loadingRef.current = loading;
   useEffect(() => {
     let active = true;
+    const refreshContext = async () => {
+      try {
+        const r = await apiFetch('/api/printer/context');
+        if (!r.ok) return;
+        const ctx = await r.json();
+        if (!active || !ctx?.captured_at) return;
+        contextRef.current = ctx;
+        setPrintContext(ctx);
+        if (latestRef.current && !belongsToPrint(latestRef.current, ctx)) {
+          latestRef.current = null;
+          onResult(null);
+          setPreviewUrl(null);
+          setError(null);
+        }
+      } catch { /* Retain the last known session during connection failures. */ }
+    };
     const refresh = async () => {
       try {
+        await refreshContext();
         const r = await apiFetch('/api/history?limit=1');
         if (!r.ok) return;
         const rows = await r.json();
         const latest = rows[0];
-        if (!active || loadingRef.current || !latest || (latestRef.current && new Date(latest.timestamp) <= new Date(latestRef.current.timestamp))) return;
+        if (!active || loadingRef.current || !latest || !belongsToPrint(latest, contextRef.current) || (latestRef.current && new Date(latest.timestamp) <= new Date(latestRef.current.timestamp))) return;
         let parsed = {}; try { parsed = JSON.parse(latest.raw_response || '{}'); } catch {}
         onResult({ ...latest, summary: parsed?.summary || '' });
       } catch { /* Keep the current diagnosis when polling is unavailable. */ }
     };
     refresh();
     const timer = setInterval(refresh, 15000);
-    return () => { active = false; clearInterval(timer); };
+    const contextTimer = setInterval(refreshContext, 5000);
+    return () => { active = false; clearInterval(timer); clearInterval(contextTimer); };
   }, [apiFetch, onResult]);
 
 
@@ -240,7 +263,7 @@ export default function DiagnosePanel({ config, onResult, latestResult }) {
       const r = await apiFetch('/api/diagnose', { method: 'POST', body: fd });
       const data = await r.json();
       if (!r.ok) throw new Error(data.error || 'Diagnosis failed');
-      onResult(data);
+      if (belongsToPrint(data, contextRef.current)) onResult(data);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -258,90 +281,96 @@ export default function DiagnosePanel({ config, onResult, latestResult }) {
   const result = latestResult;
 
   return (
-    <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <div style={{ fontWeight: 700, fontSize: 14 }}>AI Diagnosis</div>
-      <p style={{ color: 'var(--muted)', fontSize: 12 }}>Nozzle and flow fixes can auto-apply when enabled in Automatic monitoring. Speed and fan changes require Apply fix.</p>
-
-      <div style={{ display: 'flex', gap: 10 }}>
-        <button
-          className="btn-primary"
-          style={{ flex: 1 }}
-          onClick={() => diagnose(null)}
-          disabled={loading || (!config?.printer_ip && !config?.camera_url)}
-        >
-          {loading ? 'Analyzing…' : 'Diagnose Now'}
-        </button>
-        <button className="btn-ghost" onClick={() => fileRef.current?.click()} disabled={loading}>
-          Upload Image
-        </button>
-        <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFile} />
+    <div className="stack">
+      <div className="card">
+        <DiagnosisFixes recent config={config} printContext={printContext} />
       </div>
+      <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ fontWeight: 700, fontSize: 14 }}>AI Diagnosis</div>
+        <p style={{ color: 'var(--muted)', fontSize: 12 }}>Nozzle and flow fixes can auto-apply when enabled in Automatic monitoring. Speed and fan changes require Apply fix.</p>
 
-      {!config?.printer_ip && !config?.camera_url && (
-        <p style={{ color: 'var(--muted)', fontSize: 13 }}>
-          "Diagnose Now" requires the printer camera. Configure the printer IP in Settings, or upload a photo manually.
-        </p>
-      )}
+        <div style={{ display: 'flex', gap: 10 }}>
+          <button
+            className="btn-primary"
+            style={{ flex: 1 }}
+            onClick={() => diagnose(null)}
+            disabled={loading || (!config?.printer_ip && !config?.camera_url)}
+          >
+            {loading ? 'Analyzing…' : 'Diagnose Now'}
+          </button>
+          <button className="btn-ghost" onClick={() => fileRef.current?.click()} disabled={loading}>
+            Upload Image
+          </button>
+          <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleFile} />
+        </div>
 
-      {error && <p style={{ color: 'var(--crit)', fontSize: 13 }}>{error}</p>}
+        {!config?.printer_ip && !config?.camera_url && (
+          <p style={{ color: 'var(--muted)', fontSize: 13 }}>
+            "Diagnose Now" requires the printer camera. Configure the printer IP in Settings, or upload a photo manually.
+          </p>
+        )}
 
-      {previewUrl && (
-        <img src={previewUrl} alt="Upload preview" style={{ borderRadius: 6, maxHeight: 180, objectFit: 'contain', background: '#000' }} />
-      )}
+        {error && <p style={{ color: 'var(--crit)', fontSize: 13 }}>{error}</p>}
 
-      {result && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontWeight: 700, fontSize: 16, color: result.followup && !result.issues?.length ? 'var(--muted)' : SEVERITY_COLORS[result.overall_severity] }}>
-              {result.followup && !result.issues?.length ? 'Follow-up: no confirmed new issues' : result.overall_severity === 'ok' ? 'Print looks good' :
-               result.overall_severity === 'warning' ? 'Issues detected' : 'Critical issues'}
-            </span>
-            {!(result.followup && !result.issues?.length) && <SeverityChip sev={result.overall_severity} />}
-          </div>
+        {previewUrl && (
+          <img src={previewUrl} alt="Upload preview" style={{ borderRadius: 6, maxHeight: 180, objectFit: 'contain', background: '#000' }} />
+        )}
 
-          {result.followup && <div className="card" style={{fontSize:13}}><strong>Follow-up after correction</strong><p>{result.followup.note}</p><p style={{color:'var(--muted)',marginTop:6}}>Previously corrected: {result.followup.categories.map(c=>ISSUE_LABELS[c] || c).join(', ')}. Existing marks are excluded from new-issue findings.</p></div>}
-          {result.summary && (!result.followup || result.issues?.length > 0) && (
-            <p style={{ fontSize: 13, color: 'var(--muted)' }}>{result.summary}</p>
-          )}
-
-          {result.issues?.length > 0 && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {result.issues.map((issue, i) => {
-                const borderColor = issue.severity === 'severe' ? 'var(--crit)' : issue.severity === 'moderate' ? 'var(--warn)' : 'var(--ok)';
-                return (
-                  <div key={i} style={{ background: 'var(--surface2)', borderRadius: 8, padding: '10px 14px', borderLeft: `3px solid ${borderColor}` }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                      <span style={{ fontWeight: 700, fontSize: 13 }}>{ISSUE_LABELS[issue.category] || issue.category}</span>
-                      <span style={{ fontSize: 11, color: borderColor, fontWeight: 600, textTransform: 'uppercase' }}>{issue.severity}</span>
-                    </div>
-                    {issue.description && (
-                      <p style={{ fontSize: 13, color: 'var(--text)', marginBottom: 5, lineHeight: 1.45 }}>{issue.description}</p>
-                    )}
-                    <p style={{ fontSize: 12, color: 'var(--muted)', borderTop: issue.description ? '1px solid var(--border)' : 'none', paddingTop: issue.description ? 5 : 0, marginTop: 0, lineHeight: 1.45 }}>
-                      <span style={{ fontWeight: 600, color: 'var(--accent)' }}>Fix: </span>{issue.suggestion}
-                    </p>
-                  </div>
-                );
-              })}
+        {result && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontWeight: 700, fontSize: 16, color: result.followup && !result.issues?.length ? 'var(--muted)' : SEVERITY_COLORS[result.overall_severity] }}>
+                {result.followup && !result.issues?.length ? 'Follow-up: no confirmed new issues' : result.overall_severity === 'ok' ? 'Print looks good' :
+                 result.overall_severity === 'warning' ? 'Issues detected' : 'Critical issues'}
+              </span>
+              {!(result.followup && !result.issues?.length) && <SeverityChip sev={result.overall_severity} />}
             </div>
-          )}
 
-          <div style={{ fontSize: 11, color: 'var(--muted)' }}>
-            {new Date(result.timestamp).toLocaleString()}
+            {result.followup && <div className="card" style={{fontSize:13}}><strong>Follow-up after correction</strong><p>{result.followup.note}</p><p style={{color:'var(--muted)',marginTop:6}}>Previously corrected: {result.followup.categories.map(c=>ISSUE_LABELS[c] || c).join(', ')}. Existing marks are excluded from new-issue findings.</p></div>}
+            {result.summary && (!result.followup || result.issues?.length > 0) && (
+              <p style={{ fontSize: 13, color: 'var(--muted)' }}>{result.summary}</p>
+            )}
+
+            {result.issues?.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {result.issues.map((issue, i) => {
+                  const borderColor = issue.severity === 'severe' ? 'var(--crit)' : issue.severity === 'moderate' ? 'var(--warn)' : 'var(--ok)';
+                  return (
+                    <div key={i} style={{ background: 'var(--surface2)', borderRadius: 8, padding: '10px 14px', borderLeft: `3px solid ${borderColor}` }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                        <span style={{ fontWeight: 700, fontSize: 13 }}>{ISSUE_LABELS[issue.category] || issue.category}</span>
+                        <span style={{ fontSize: 11, color: borderColor, fontWeight: 600, textTransform: 'uppercase' }}>{issue.severity}</span>
+                      </div>
+                      {issue.description && (
+                        <p style={{ fontSize: 13, color: 'var(--text)', marginBottom: 5, lineHeight: 1.45 }}>{issue.description}</p>
+                      )}
+                      <p style={{ fontSize: 12, color: 'var(--muted)', borderTop: issue.description ? '1px solid var(--border)' : 'none', paddingTop: issue.description ? 5 : 0, marginTop: 0, lineHeight: 1.45 }}>
+                        <span style={{ fontWeight: 600, color: 'var(--accent)' }}>Fix: </span>{issue.suggestion}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+              {new Date(result.timestamp).toLocaleString()}
+            </div>
+
+            {result.id && <DiagnosisFixes key={result.id} result={result} config={config} />}
+            <DiagnosisChat key={result.id || result.timestamp} result={result} />
           </div>
+        )}
 
-          {result.id && <DiagnosisFixes key={result.id} result={result} config={config} />}
-          <DiagnosisChat key={result.id || result.timestamp} result={result} />
-        </div>
-      )}
-
-      <DiagnosisFixes recent config={config} />
-
-      {!result && !loading && !error && (
-        <div style={{ textAlign: 'center', padding: '24px 0', color: 'var(--muted)', fontSize: 13 }}>
-          Click "Diagnose Now" to capture and analyze the current print
-        </div>
-      )}
+        {!result && !loading && !error && (
+          <div style={{ textAlign: 'center', padding: '24px 0', color: 'var(--muted)', fontSize: 13 }}>
+            Click "Diagnose Now" to capture and analyze the current print
+          </div>
+        )}
+      </div>
+      <div className="card">
+        <History latestId={result?.id} />
+      </div>
     </div>
   );
 }
