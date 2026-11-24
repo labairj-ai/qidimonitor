@@ -2,7 +2,7 @@
 
 A shared 3D-printing dashboard for the **QIDI X-Plus 3** and **Snapmaker U1**. View both printers together, or open a printer's Monitor, Files, and Settings pages. Each printer has independent configuration, camera URLs, diagnoses, files, and automatic monitoring.
 
-On each printer’s Monitor page, **Recent adjustments** appears above **AI Diagnosis** and shows the date and time of each adjustment. **Diagnosis History** shows the newest 10 results first, with Previous and Next for older results.
+On each printer’s Monitor page, **Recent adjustments** shows timestamped adjustments for the current print. **Diagnosis History** shows up to 10 diagnoses per page for that print, newest first. Starting another print of the same file opens a new history view. Earlier diagnoses remain stored.
 
 ## Current deployment
 
@@ -118,17 +118,17 @@ The card shows whether monitoring is off, waiting for a print, checking the prin
 
 Enabling checks the printer immediately. While enabled, the scheduler observes printer state roughly every 15 seconds; an idle observation does not consume the diagnosis interval. A detected new/resumed print starts a check promptly. Subsequent diagnosis intervals are measured after each attempt finishes, so long-running AI requests cannot cause overlapping or back-to-back automatic analyses. The service begins monitoring enabled printers at startup. Printer schedules and failures remain isolated.
 
-Disabling prevents new analyses. A camera fetch that has not reached analysis is stopped from proceeding; an AI analysis already underway may finish and save its result, with that state shown in the card. Disabling scheduled monitoring also prevents its pending analysis from submitting an automatic correction. Automatic diagnoses can apply eligible nozzle-temperature and flow corrections when their separate Auto-apply switches are enabled. Speed and fan adjustments still require Apply fix. Disabling automatic checks stops scheduled diagnoses; turn off the Auto-apply switches too if manual live diagnoses should remain review-only.
+Disabling prevents new analyses. A camera fetch that has not reached analysis is stopped from proceeding; an AI analysis already underway may finish and save its result, with that state shown in the card. Disabling scheduled monitoring also prevents its pending analysis from submitting an automatic correction. Scheduled checks and **Diagnose Now** both honor the per-control switches in [Automatic corrections](#automatic-corrections-and-post-fix-comparisons). Turn off those switches to require review for all manual live diagnoses.
 
 `GET /api/printers/:printerId/monitor` returns live state and the latest saved automatic result; `POST /api/printers/:printerId/monitor/check` starts a nonblocking check. Enable and interval settings remain in the printer-scoped config API. Runtime progress and scheduling reset on service restart; saved enable/interval settings and diagnosis history persist.
 
 ## Manual flow rate
 
-In Print status during a print, use the **− / +** stepper or number field to adjust flow in **1 percentage-point steps**, then click **Apply flow**. The manual range remains 50–150%. Editing the selected value does not send commands; the current reported flow is shown below it. **Reset** retains its existing behavior of applying 100%. This makes 1–2% AI-recommended adjustments easy to enter precisely.
+During a print, select **Unlock edits** in **Print status**, then use the **− / +** stepper or number field to adjust flow in **1 percentage-point steps**, then click **Apply flow**. The manual range remains 50–150%. Editing the selected value does not send commands; the current reported flow is shown below it. **Reset** retains its existing behavior of applying 100%. This makes 1–2% AI-recommended adjustments easy to enter precisely.
 
 ## Manual nozzle temperature
 
-During an active or paused QIDI print, open **Monitor → Print status → Nozzle temperature**, enter a whole-number target in °C, and click **Apply temperature**. This control also appears in the all-printers overview. Actual temperature and current target are displayed separately; typing does not send a command. No diagnosis or AI approval is needed.
+During an active or paused QIDI print, select **Unlock edits** in **Monitor → Print status**, then open **Nozzle temperature**, enter a whole-number target in °C, and click **Apply temperature**. This control also appears in the all-printers overview. Actual temperature and current target are displayed separately; typing does not send a command. No diagnosis or AI approval is needed.
 
 Manual targets allow 180–300°C, narrowed by the printer's reported minimum/maximum heater and minimum extrusion temperatures (with a 5°C margin). The detected material baseline is shown as a reference; manual entry can follow the filament manufacturer's settings rather than the narrower AI-fix range. Missing heater limits disable the control. Idle preheating and heater-off actions are not supported by this control.
 
@@ -140,7 +140,7 @@ Open a printer’s **Monitor → Printer Status** and select **Unlock edits**. M
 
 On the QIDI, expand **Bed and advanced print tuning** for bed temperature, first-layer Z offset, pressure advance, and acceleration limit. The app checks the current print, target, and firmware limits before applying changes. Z offset is available while the first layer can be confirmed. Later slicer commands can replace live settings.
 
-AI diagnoses can propose bounded adjustments. Use the individual switches under **Automatic monitoring → Automatic corrections** to opt in to auto-apply. The new Z-offset, pressure-advance, and acceleration switches start off. Automatic Z-offset proposals require a clear first-layer defect and a matching G-code reference.
+The advanced controls use `POST /api/printers/qidi/printer/live-controls/:control` with `bed`, `z_offset`, `pressure_advance`, or `acceleration`. Send the requested `target` along with the last reported value (`expected`), `filename`, `extruder`, and `session_start` in milliseconds. The API returns HTTP 202 if it cannot confirm the result. Check the reported value before submitting another change.
 
 ## Compare the camera with the active print
 
@@ -148,7 +148,7 @@ For live diagnoses, QIDI Monitor reads the active filename and G-code position f
 
 The first check may run while the G-code downloads. The diagnosis reports whether it used a G-code reference, is waiting for a download, or has no reference. Uploaded photos and live checks without a usable reference are assessed from visible evidence. The current renderer supports linear extrusion paths in G-code files up to 32 MiB.
 
-The app keeps each active file in memory for later checks. It clears the cache and cancels any pending download when the job finishes or is canceled, even with the browser closed. Diagnosis history remains available.
+The app keeps each active file in memory for later checks. It clears the cache and cancels any pending download when the job finishes or is canceled, even with the browser closed. Saved diagnoses remain in the database after the reference cache is cleared.
 
 ## Diagnosis fixes
 
@@ -187,11 +187,11 @@ Under **Automatic monitoring → Automatic corrections**, use the individual aut
 
 The adjustment log identifies automatic applications. Undo restores a verified setting and turns off automatic changes for that control. An unconfirmed command also turns off its auto mode and is never resent; an unconfirmed action blocks further fixes until inspected and acknowledged. Switch changes are rechecked immediately before submitting a command, so disabling during analysis stops a future application.
 
-After a confirmed correction, the app records a camera image and retains per-print correction memory in SQLite. It waits at least 60 seconds after flow/other corrections or 120 seconds after nozzle changes, with the nozzle within 3°C of target, then establishes a settled reference image. Subsequent checks compare that reference with the current camera image. Existing strings, scars, and other already-corrected defects are historical, not new issue findings. Another fix for that category requires actual print/Z progress, a clear comparison, a matching reference ID, and explicit evidence of new defects on newly deposited material. Missing images, unclear views, unchanged material, missing comparison evidence, and images analyzed across a concurrent correction cannot authorize a repeat.
+After a confirmed correction, the app records a camera image and retains per-print correction memory in SQLite. It waits at least 60 seconds after flow or motion corrections, 120 seconds after nozzle changes, or 180 seconds after bed changes before establishing a settled reference image. For heater changes, the measured temperature must also be within 3°C of the target. Subsequent checks compare that reference with the current camera image. Existing strings, scars, and other already-corrected defects are historical, not new issue findings. Another fix for that category requires actual print/Z progress, a clear comparison, a matching reference ID, and explicit evidence of new defects on newly deposited material. Missing images, unclear views, unchanged material, missing comparison evidence, and images analyzed across a concurrent correction cannot authorize a repeat.
 
-The AI Diagnosis panel shows the follow-up state instead of presenting old stringing as a new failure. Memory survives reloads/restarts and does not cross print sessions, printers, toolheads, or materials. Relevant manual nozzle/flow changes in the app are also recorded when linked to a current-print diagnosis. Changes made outside the app can invalidate an existing reference and require a new baseline. Camera comparisons remain AI judgments; uncertainty blocks repeated corrections rather than guessing.
+The AI Diagnosis panel shows the follow-up state instead of presenting old stringing as a new failure. Memory survives reloads/restarts and does not cross print sessions, printers, toolheads, or materials. Relevant manual nozzle, flow, and advanced QIDI tuning changes are also recorded when linked to a current-print diagnosis. Changes made outside the app can invalidate an existing reference and require a new baseline. Camera comparisons remain AI judgments; uncertainty blocks repeated corrections rather than guessing.
 
-New storage: `correction_observations` tracks post-change images/context and `diagnosis_followups` preserves each follow-up assessment. Images are retained under the configured snapshots directory. Tests use disposable databases and simulated printers/model responses for both auto modes, skipped/uncertain actions, Undo, residual-defect suppression, new-growth evidence, comparison-reference checks, persistence, and print isolation.
+New storage: `correction_observations` tracks post-change images/context and `diagnosis_followups` preserves each follow-up assessment. Images are retained under the configured snapshots directory. Tests use disposable databases and simulated printers/model responses for per-control automatic application, skipped or uncertain actions, Undo, residual-defect suppression, new-growth evidence, comparison-reference checks, persistence, and print isolation.
 
 ## Chamber light
 
@@ -205,7 +205,9 @@ Verification on November 15, 2026: integration tests passed for delayed command 
 
 ## API and architecture
 
-Printer-specific endpoints use `/api/printers/:printerId/...` with stable IDs `qidi` and `u1`. `GET /api/printers` lists both configurations; `POST /api/printers/:printerId/test` checks a saved connection. Existing `/api/...` routes remain QIDI-only compatibility aliases. Unknown printer IDs return 404. Selection in one browser does not change another browser's request target.
+Printer-specific endpoints use `/api/printers/:printerId/...` with stable IDs `qidi` and `u1`. `GET /api/printers` lists both configurations; `POST /api/printers/:printerId/test` checks a saved connection. Existing `/api/...` routes remain QIDI-only compatibility aliases. Unknown printer IDs return 404. Each browser selects its printer independently.
+
+`GET /api/printers/:printerId/history?scope=current-print&limit=10&offset=0` filters by the current print before pagination. Omit `scope` to retrieve that printer’s saved diagnoses across print sessions.
 
 ```text
 server/
