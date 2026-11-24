@@ -24,6 +24,7 @@ async function fakePrinter(name, count) {
   const actions = [];
   const scripts = [];
   let light = 1;
+  let job = { job_id: '002', start_time: Date.now() / 1000 - 30, status: 'in_progress', filename: `${name}.gcode` };
   const server = http.createServer(async (req, res) => {
     actions.push(req.url);
     if (req.url === '/printer/gcode/script') {
@@ -37,6 +38,7 @@ async function fakePrinter(name, count) {
     if (count === 1) status['output_pin caselight'] = {value:light};
     for(let i=0;i<count;i++) status[i?`extruder${i}`:'extruder']={temperature:200+i,target:210};
     let result = req.url === '/printer/objects/list' ? {objects} : req.url === '/printer/info' ? {hostname:name,state:'ready'} : req.url === '/server/webcams/list' ? {webcams:[{name:'Built-in',stream_url:'/camera',snapshot_url:'/snapshot'}]} : {status};
+    if (req.url.startsWith('/server/history/list?')) result = { jobs: [job] };
     res.setHeader('Content-Type','application/json');
     // Apply the pin immediately, but simulate Klipper delaying its acknowledgment.
     if (req.url === '/printer/gcode/script' && light === 0) {
@@ -44,7 +46,7 @@ async function fakePrinter(name, count) {
     } else res.end(JSON.stringify({result}));
   });
   await new Promise(r=>server.listen(0,'127.0.0.1',r)); servers.push(server);
-  return {url:`http://127.0.0.1:${server.address().port}`, actions, scripts};
+  return {url:`http://127.0.0.1:${server.address().port}`, actions, scripts, job};
 }
 const qidi=await fakePrinter('qidi-device',1), u1=await fakePrinter('u1-device',4);
 let child;
@@ -118,6 +120,27 @@ test('scoped routes cannot leak targets or enable unverified U1 controls',async(
   assert.ok(!qidi.actions.includes('/printer/print/pause'));
   assert.equal((await json('/api/printers/qidi/printer/discover',{method:'POST'})).status,409);
   assert.equal((await json('/api/printers/qidi/config')).data.printer_ip,'qidi-old.local');
+});
+test('current print history excludes a late diagnosis from an earlier run of the same file', async () => {
+  const filename = qidi.job.filename;
+  const timestamp = new Date().toISOString();
+  const startedAt = qidi.job.start_time * 1000;
+  const insert = (jobId, start) => Number(store.insertDiagnosis({
+    printer_id: 'qidi', timestamp, print_file: filename, overall_severity: 'ok', raw_response: '{}', auto_triggered: true,
+    printer_context: { filename, print_job_id: jobId, print_started_at: start, captured_at: start + 1000 },
+  }).lastInsertRowid);
+  const first = insert(qidi.job.job_id, startedAt);
+  const second = insert(qidi.job.job_id, startedAt);
+  const old = insert('001', startedAt - 10000);
+  const history = async query => (await (await fetch(`${base}/api/printers/qidi/history?${query}`)).json()).map(row => row.id);
+  assert.deepEqual(await history('scope=current-print&limit=1'), [second]);
+  assert.deepEqual(await history('scope=current-print&limit=1&offset=1'), [first]);
+  assert.deepEqual(await history('limit=1'), [old]);
+  const monitor = await (await fetch(`${base}/api/printers/qidi/monitor`)).json();
+  assert.equal(monitor.latest_diagnosis.id, second);
+  qidi.job.job_id = '003';
+  qidi.job.start_time = Date.now() / 1000;
+  assert.deepEqual(await history('scope=current-print'), []);
 });
 test('simultaneous monitoring isolates failures and blocks overlap per printer',async()=>{
   const {createMonitor}=await import('../server/monitor.js');

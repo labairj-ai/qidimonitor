@@ -1,3 +1,4 @@
+import { AUTO_FLAGS } from './diagnosisFixes.js';
 import { Router } from 'express';
 import fetch from 'node-fetch';
 import { getConfig, listPrinters } from './db.js';
@@ -10,7 +11,7 @@ export function validateSettings(updates) {
       if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('Use an HTTP(S) URL without embedded credentials');
     }
     if (key === 'printer_ip' && value && !/^[a-zA-Z0-9.-]+$/.test(value)) throw new Error('Enter an IP address or hostname without a port or path');
-    if (['auto_enabled','controls_enabled','auto_nozzle_enabled','auto_flow_enabled'].includes(key) && !['0','1'].includes(value)) throw new Error('Invalid toggle');
+    if (['auto_enabled','controls_enabled',...Object.values(AUTO_FLAGS)].includes(key) && !['0','1'].includes(value)) throw new Error('Invalid toggle');
     if (key === 'auto_interval_min' && (!/^\d+$/.test(value) || +value < 1 || +value > 1440)) throw new Error('Monitoring interval must be 1–1440 minutes');
     if (key === 'name' && !value.trim()) throw new Error('Printer name is required');
   }

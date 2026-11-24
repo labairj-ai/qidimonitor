@@ -1,4 +1,5 @@
 import fetch from 'node-fetch';
+import { LIVE_TARGET_CONTROLS, liveControlLimits } from './diagnosisFixes.js';
 import { lookupMaterial, checkDeviations } from './materialProfiles.js';
 
 export async function getPrinterContext(config) {
@@ -20,12 +21,15 @@ export async function getPrinterContext(config) {
 
     if (!objRes.ok) return null;
     const status = (await objRes.json()).result?.status || {};
+    const capturedAt = Date.now();
 
     const activeExtruder = status.toolhead?.extruder || 'extruder';
     let printerCfg = null;
     if (cfgRes.ok) {
       const cfg = (await cfgRes.json()).result?.status?.configfile?.config || {};
       printerCfg = {
+        bed_min_temp: cfg.heater_bed?.min_temp == null ? null : Number(cfg.heater_bed.min_temp),
+        bed_max_temp: cfg.heater_bed?.max_temp == null ? null : Number(cfg.heater_bed.max_temp),
         nozzle_diameter: cfg[activeExtruder]?.nozzle_diameter,
         nozzle_min_temp: cfg[activeExtruder]?.min_temp != null ? Number(cfg[activeExtruder].min_temp) : null,
         nozzle_max_temp: cfg[activeExtruder]?.max_temp != null ? Number(cfg[activeExtruder].max_temp) : null,
@@ -43,13 +47,25 @@ export async function getPrinterContext(config) {
     // File metadata contains slicer settings (layer height, filament type, etc.)
     let fileMeta = null;
     const filename = status.print_stats?.filename;
+    let printJob = null;
     if (filename) {
-      try {
-        const metaRes = await fetch(`${base}/server/files/metadata?filename=${encodeURIComponent(filename)}`, {
-          signal: AbortSignal.timeout(3000),
-        });
-        if (metaRes.ok) fileMeta = (await metaRes.json()).result;
-      } catch { /* metadata not available */ }
+      const readResult = async url => {
+        try {
+          const response = await fetch(url, { signal: AbortSignal.timeout(3000) });
+          return response.ok ? (await response.json()).result : null;
+        } catch { return null; }
+      };
+      const [metadata, history] = await Promise.all([
+        readResult(`${base}/server/files/metadata?filename=${encodeURIComponent(filename)}`),
+        readResult(`${base}/server/history/list?limit=1&order=desc`),
+      ]);
+      fileMeta = metadata;
+      const job = history?.jobs?.[0];
+      const active = ['printing', 'paused'].includes(status.print_stats.state);
+      if (job?.filename === filename && (job.status === 'in_progress') === active &&
+          Number.isFinite(job.start_time) && job.start_time * 1000 <= capturedAt) {
+        printJob = job;
+      }
     }
 
     const fan = status['output_pin fan0'];
@@ -59,7 +75,9 @@ export async function getPrinterContext(config) {
     const toolheads = objects.filter(n => /^extruder\d*$/.test(n)).map(name => ({ name, active: name === activeExtruder, temperature: status[name]?.temperature, target: status[name]?.target }));
     if (status[activeExtruder]) status.extruder = status[activeExtruder];
     const ctx = {
-      captured_at: Date.now(),
+      captured_at: capturedAt,
+      print_job_id: printJob?.job_id ?? null,
+      print_started_at: printJob ? printJob.start_time * 1000 : null,
       printer_name: config.name, model: config.model, toolheads, active_extruder: activeExtruder,
       print_state: status.print_stats?.state,
       filename,
@@ -82,6 +100,9 @@ export async function getPrinterContext(config) {
       speed_factor_pct: status.gcode_move?.speed_factor != null ? Math.round(status.gcode_move.speed_factor * 100) : null,
       flow_pct: status.gcode_move?.extrude_factor != null ? Math.round(status.gcode_move.extrude_factor * 100) : null,
       pressure_advance: status.extruder?.pressure_advance,
+      z_offset: status.gcode_move?.homing_origin?.[2],
+      gcode_z_mm: status.gcode_move?.gcode_position?.[2],
+      max_acceleration: status.toolhead?.max_accel,
       z_mm: status.motion_report?.live_position?.[2] != null ? +status.motion_report.live_position[2].toFixed(3) : null,
       live_velocity: status.motion_report?.live_velocity != null ? +status.motion_report.live_velocity.toFixed(1) : null,
       filament_detected: filSensor?.filament_detected,
@@ -111,6 +132,9 @@ export async function getPrinterContext(config) {
       ctx.time_remaining_sec = null;
     }
 
+    if (ctx.model === 'qidi') {
+      ctx.live_control_limits = Object.fromEntries(LIVE_TARGET_CONTROLS.map(control => [control, liveControlLimits(control, ctx)]));
+    }
     ctx.material_profile = config.model === 'qidi' ? lookupMaterial(ctx.filament_type) : null;
     ctx.deviations = checkDeviations(ctx, ctx.material_profile);
 
@@ -142,6 +166,9 @@ export function formatContextForPrompt(ctx) {
   if (ctx.fan_pct != null) lines.push(`  Part cooling fan: ${ctx.fan_pct}%`);
   if (ctx.speed_factor_pct != null && ctx.speed_factor_pct !== 100) lines.push(`  Speed override: ${ctx.speed_factor_pct}%`);
   if (ctx.flow_pct != null && ctx.flow_pct !== 100) lines.push(`  Flow override: ${ctx.flow_pct}%`);
+  if (ctx.z_offset != null) lines.push(`  Z offset: ${ctx.z_offset} mm`);
+  if (ctx.max_acceleration != null) lines.push(`  Current acceleration limit: ${ctx.max_acceleration} mm/s²`);
+  if (ctx.gcode_z_mm != null) lines.push(`  Commanded Z height: ${ctx.gcode_z_mm} mm`);
   if (ctx.pressure_advance != null) lines.push(`  Pressure advance: ${ctx.pressure_advance}`);
   if (ctx.current_layer != null) lines.push(`  Current layer: ${ctx.current_layer}`);
   if (ctx.z_mm != null) lines.push(`  Z height: ${ctx.z_mm}mm`);
@@ -158,6 +185,7 @@ export function formatContextForPrompt(ctx) {
     lines.push('');
     lines.push('Printer config:');
     if (pc.nozzle_min_temp != null && pc.nozzle_max_temp != null) lines.push(`  Nozzle heater limits: ${pc.nozzle_min_temp}–${pc.nozzle_max_temp}°C; minimum extrusion temperature ${pc.min_extrude_temp}°C`);
+    if (Number.isFinite(pc.bed_min_temp) && Number.isFinite(pc.bed_max_temp)) lines.push(`  Bed heater limits: ${pc.bed_min_temp}–${pc.bed_max_temp}°C`);
     if (pc.nozzle_diameter) lines.push(`  Nozzle: ${pc.nozzle_diameter}mm`);
     if (pc.max_velocity) lines.push(`  Max velocity: ${pc.max_velocity}mm/s`);
     if (pc.max_accel) lines.push(`  Max accel: ${pc.max_accel}mm/s²`);

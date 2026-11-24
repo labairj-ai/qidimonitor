@@ -11,6 +11,10 @@ const ISSUE_LABELS = {
   over_extrusion: 'Over-Extrusion',
   elephant_foot: 'Elephant Foot',
   ghosting: 'Ghosting/Ringing',
+  first_layer_gap: 'First-layer gaps',
+  first_layer_squish: 'Excess first-layer squish',
+  pressure_advance_low: 'Corner buildup',
+  pressure_advance_high: 'Corner thinning',
   spaghetti: 'Spaghetti Failure',
   blob_zit: 'Blob/Zit',
   bed_adhesion: 'Bed Adhesion',
@@ -75,20 +79,22 @@ function PrinterContextPanel({ ctx }) {
   );
 }
 
-export default function History({ latestId }) {
+export default function History({ latestId, printContext }) {
   const { apiFetch } = usePrinterApi();
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [expanded, setExpanded] = useState(null);
   const [page, setPage] = useState(0);
+  const hasPrint = !!printContext?.filename;
   const firstPageLatestId = page === 0 ? latestId : undefined;
 
   useEffect(() => {
+    if (!hasPrint) { setLoading(false); return; }
     let active = true;
     setLoading(true);
     setError('');
-    apiFetch(`/api/history?limit=${PAGE_SIZE + 1}&offset=${page * PAGE_SIZE}`)
+    apiFetch(`/api/history?scope=current-print&limit=${PAGE_SIZE + 1}&offset=${page * PAGE_SIZE}`)
       .then(r => {
         if (!r.ok) throw new Error('Unable to load diagnosis history.');
         return r.json();
@@ -97,7 +103,7 @@ export default function History({ latestId }) {
       .catch(() => { if (active) setError('Unable to load diagnosis history.'); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
-  }, [apiFetch, page, firstPageLatestId]);
+  }, [apiFetch, page, firstPageLatestId, hasPrint]);
 
   const changePage = (nextPage) => {
     setExpanded(null);

@@ -1,3 +1,4 @@
+import { belongsToPrint } from '../../client/src/diagnosisSession.mjs';
 import { Router } from 'express';
 import multer from 'multer';
 import fetch from 'node-fetch';
@@ -55,15 +56,18 @@ For each issue, report geometry_evidence. Use visible_defect only for a defect d
 If the print looks good, return overall_severity "ok", an empty issues array, and empty control_suggestions.
 
 REVIEWED CONTROL SUGGESTIONS (optional, never commands):
-Only for an actual live QIDI print with reliable context, you may suggest ONE small adjustment when the visible issue and telemetry support it. For control_suggestions, specify the control name, integer target percentage value, matching issue_category, and a reason tied to actual visible evidence and reported readings. Empty arrays are appropriate when no bounded live change is justified.
+Only for an actual live QIDI print with reliable context, you may suggest ONE small adjustment when the visible issue and telemetry support it. For control_suggestions, specify the control name, numeric target in the listed units, matching issue_category, and a reason tied to actual visible evidence and reported readings. Empty arrays are appropriate when no bounded live change is justified.
 - speed: percentage override, only reduce current by 5 to 10 percentage points, final 50 to 100; for ghosting or under_extrusion only. Do not reduce speed to treat over-extrusion or oozing.
 - flow: percentage override, only change by 1 to 2 percentage points within 95 to 105; increase for under_extrusion, decrease for over_extrusion. Requires known PLA/PETG/ABS/ASA/TPU material.
 - fan: only increase part-cooling by at most 10 percentage points for stringing/blob_zit after the first two layer heights. Final ranges PLA 50-100, PETG 20-50, ABS/ASA/TPU 0-20. Requires known material and layer/Z context.
 Do not propose changes for severe or critical issues, spaghetti, warping, bed adhesion failure, or layer delamination. Those need user inspection. - nozzle: nozzle TARGET in degrees Celsius, not the measured temperature. Change by at most 10 C per fix, only with known PLA/PETG/ABS/ASA/TPU and a settled nozzle (actual within 5 C of its current target). Decrease for stringing, blob_zit, or over_extrusion; increase only for under_extrusion. Final ranges: PLA 200-210 C, PETG 230-245 C, ABS/ASA 235-255 C, TPU 210-225 C, also respecting reported hardware limits. Never turn the heater off. If recommending a nozzle adjustment in the advice and these bounds permit it, include a matching nozzle control_suggestion so it can be reviewed and applied.
 - bed: target in whole °C. For bed_temperature only, and only if the current measured bed is within 3°C of its target, the target is below the material range, and a rise of at most 5°C reaches that range. Bed ranges: PLA 55–65°C, PETG 70–85°C, ABS/ASA 90–110°C, TPU 40–55°C. Respect reported heater limits. Do not propose a decrease, a change during startup, or a change for lifting or failed adhesion. Never set the bed to zero.
-Do not propose retraction, motion, calibration, chamber temperature, other heater, or power commands. Never invent missing readings. If uncertain, use [] and give textual advice only. A suggestion is an experiment to review, not a guaranteed fix.`;
+- acceleration: integer maximum acceleration in mm/s². Reduce the reported live limit by 100–500 mm/s², at most 15%, for repeated visible ringing after corners. Stay between 500 and the reported configured acceleration limit.
+- pressure_advance: numeric target, increment or decrement by 0.005–0.010 within 0–0.200. Use pressure_advance_low for material buildup specifically at several decelerating corners, or pressure_advance_high for thinning specifically around several corners. Rule out general extrusion defects and uncertain views.
+- z_offset: numeric absolute offset in mm, adjust by 0.005–0.020 within ±0.150. Only while actively laying the first layer, with a matching first-layer G-code reference and a clearly visible model region. Use first_layer_gap for repeated gaps between intended adjacent solid lines and lower the offset. Use first_layer_squish for visible ridges from excessive squish and raise it. Do not suggest Z changes for lifting, detached material, the purge line, intentionally spaced lines, or later layers.
+Do not propose commands or changes to retraction, chamber temperature, other heaters, or power. Never invent missing readings. If uncertain, use [] and give textual advice only. A suggestion is an experiment to review, not a guaranteed fix.`;
 
-const QIDI_STARTUP_GUIDANCE = `The QIDI X-Plus 3 intentionally extrudes a nozzle-prime/purge line before printing the model. It can look like an L or right-angle pair of straight beads off to the side of the build plate. Its position varies with the sliced job and camera orientation, and it can remain visible for the entire print. Exclude it in every image, including follow-up comparisons. Its presence, excess bead at the turn, or isolated strands along it are not evidence of stringing, oozing, blobs, or over-extrusion on the model. Never recommend a settings change based on this pattern. Base defect findings on visible evidence on or between model features, away from the prime line. If you cannot distinguish the prime line from the model, withhold any control suggestion. If only the prime line is visible, say the model is not yet assessable and return no issues or control suggestions. Set evidence_region to printed_part only for a defect identifiable on the printed part or between model features, startup_purge for the intentional extrusion, or uncertain otherwise. Only printed_part evidence can support a control suggestion. The monitor waits until after the first two layers before offering live changes.`;
+const QIDI_STARTUP_GUIDANCE = `The QIDI X-Plus 3 intentionally extrudes a nozzle-prime/purge line before printing the model. It can look like an L or right-angle pair of straight beads off to the side of the build plate. Its position varies with the sliced job and camera orientation, and it can remain visible for the entire print. Exclude it in every image, including follow-up comparisons. Its presence, excess bead at the turn, or isolated strands along it are not evidence of stringing, oozing, blobs, or over-extrusion on the model. Never recommend a settings change based on this pattern. Base defect findings on visible evidence on or between model features, away from the prime line. If you cannot distinguish the prime line from the model, withhold any control suggestion. If only the prime line is visible, say the model is not yet assessable and return no issues or control suggestions. Set evidence_region to printed_part only for a defect identifiable on the printed part or between model features, startup_purge for the intentional extrusion, or uncertain otherwise. Only printed_part evidence can support a control suggestion. Only the bounded Z-offset adjustment is eligible on the first layer. Other live changes wait until after the first two layers.`;
 
 const DIAGNOSIS_SCHEMA = {
   type: 'object', additionalProperties: false,
@@ -74,7 +78,7 @@ const DIAGNOSIS_SCHEMA = {
     comparison:{type:'object',required:['reference_id','clear_view'],properties:{reference_id:{type:'string'},clear_view:{type:'boolean'}}},
     issues: { type: 'array', items: { type: 'object', additionalProperties: false,
       required: ['category','severity','description','suggestion','observation','new_evidence','evidence_region','geometry_evidence'], properties: {
-        category: { type: 'string', enum: ['stringing','layer_delamination','warping','under_extrusion','over_extrusion','elephant_foot','ghosting','spaghetti','blob_zit','bed_adhesion','bed_temperature'] },
+        category: { type: 'string', enum: ['stringing','layer_delamination','warping','under_extrusion','over_extrusion','elephant_foot','ghosting','spaghetti','blob_zit','bed_adhesion','bed_temperature','first_layer_gap','first_layer_squish','pressure_advance_low','pressure_advance_high'] },
         severity: { type: 'string', enum: ['minor','moderate','severe'] },
         description: { type: 'string' }, suggestion: { type: 'string' },
         evidence_region: { type: 'string', enum: ['printed_part', 'startup_purge', 'uncertain'] },
@@ -86,18 +90,22 @@ const DIAGNOSIS_SCHEMA = {
       } } },
     control_suggestions: { type: 'array', maxItems: 1, items: { type: 'object', additionalProperties: false,
       required: ['control','value','issue_category','reason'], properties: {
-        control: { type: 'string', enum: ['speed','flow','fan','nozzle','bed'] }, value: { type: 'integer' },
-        issue_category: { type: 'string', enum: ['stringing','under_extrusion','over_extrusion','ghosting','blob_zit','bed_temperature'] }, reason: { type: 'string' },
+        control: { type: 'string', enum: ['speed','flow','fan','nozzle','bed','z_offset','pressure_advance','acceleration'] }, value: { type: 'number' },
+        issue_category: { type: 'string', enum: ['stringing','under_extrusion','over_extrusion','ghosting','blob_zit','bed_temperature','first_layer_gap','first_layer_squish','pressure_advance_low','pressure_advance_high'] }, reason: { type: 'string' },
       } } },
   },
 };
 
-async function runDiagnosis({ imageBuffer, imagePath, printFile, autoTriggered, config, uploaded = false }) {
+async function runDiagnosis({ imageBuffer, imagePath, printFile, autoTriggered, config, uploaded = false, imageCapturedAt }) {
   const ollamaUrl = config.ollama_url || 'http://100.73.128.40:11434';
   const model = config.ollama_model || 'qwen2.5-vl:7b';
   const base64 = imageBuffer.toString('base64');
 
   const ctx = await getPrinterContext(config);
+  if (!uploaded && ((printFile && ctx?.filename && printFile !== ctx.filename) ||
+      (Number.isFinite(ctx?.print_started_at) && ctx.print_started_at > imageCapturedAt))) {
+    throw new Error('The print changed during the camera capture. Run a new diagnosis.');
+  }
   const contextText = formatContextForPrompt(ctx);
   const sameJob = !printFile || printFile === ctx?.filename;
   const printReference = !uploaded && sameJob ? await getPrintReference(ctx, config) : null;
@@ -203,6 +211,7 @@ router.post('/diagnose', upload.single('image'), async (req, res) => {
   const config = getConfig(req.printerId);
   let imageBuffer;
   let imagePath = null;
+  let imageCapturedAt;
 
   if (req.file) {
     imageBuffer = req.file.buffer;
@@ -214,6 +223,7 @@ router.post('/diagnose', upload.single('image'), async (req, res) => {
     if (!snapshotUrl) return res.status(400).json({ error: 'No image uploaded and no printer camera configured' });
 
     try {
+      imageCapturedAt = Date.now();
       const r = await fetch(snapshotUrl, { signal: AbortSignal.timeout(8000) });
       if (!r.ok) throw new Error(`Camera ${r.status}`);
       imageBuffer = Buffer.from(await r.arrayBuffer());
@@ -226,7 +236,7 @@ router.post('/diagnose', upload.single('image'), async (req, res) => {
   }
 
   try {
-    const result = await runDiagnosis({ imageBuffer, imagePath, printFile: req.body?.print_file, autoTriggered: false, config, uploaded: !!req.file });
+    const result = await runDiagnosis({ imageBuffer, imagePath, printFile: req.body?.print_file, autoTriggered: false, config, uploaded: !!req.file, imageCapturedAt });
     res.json(result);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -340,10 +350,15 @@ router.post('/diagnose/chat', async (req, res) => {
 });
 
 // GET /api/history
-router.get('/history', (req, res) => {
+router.get('/history', async (req, res) => {
   const limit = Math.max(1, Math.min(parseInt(req.query.limit, 10) || 50, 200));
   const requestedOffset = Number(req.query.offset);
   const offset = Number.isSafeInteger(requestedOffset) && requestedOffset >= 0 ? requestedOffset : 0;
+  if (req.query.scope === 'current-print') {
+    const ctx = await getPrinterContext(getConfig(req.printerId));
+    if (!ctx?.filename) return res.json([]);
+    return res.json(getHistory(limit, req.printerId, offset, record => belongsToPrint(record, ctx)));
+  }
   res.json(getHistory(limit, req.printerId, offset));
 });
 

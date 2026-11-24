@@ -2,7 +2,8 @@ import { Router } from 'express';
 import fetch from 'node-fetch';
 import { getConfig } from '../db.js';
 import { recordManualCorrection } from '../correctionMemory.js';
-import { executeFix, readFixState } from '../diagnosisFixes.js';
+import { executeFix, readFixState, CONTROL_FIELDS, LIVE_TARGET_CONTROLS, validLiveTarget } from '../diagnosisFixes.js';
+import { busyAdjustments } from '../fixService.js';
 import { getPrinterContext } from '../printerContext.js';
 
 const router = Router();
@@ -199,14 +200,13 @@ router.get('/context', async (req, res) => {
 });
 
 // Manual target entry is independent of AI diagnosis eligibility.
-const nozzleBusy = new Set();
 router.post('/nozzle', async (req, res) => {
   const config = getConfig(req.printerId);
   if (config.model !== 'qidi') return res.status(409).json({ error: 'Manual nozzle controls are currently available for the QIDI only.' });
   const { target, expected_target, extruder, filename } = req.body;
   if (!Number.isInteger(target) || !Number.isFinite(expected_target) || typeof filename !== 'string' || !/^extruder\d*$/.test(extruder)) return res.status(400).json({ error: 'Enter a whole-number temperature and refresh the printer readings.' });
-  if (nozzleBusy.has(req.printerId)) return res.status(409).json({ error: 'A nozzle change is already in progress.' });
-  nozzleBusy.add(req.printerId);
+  if (busyAdjustments.has(req.printerId)) return res.status(409).json({ error: 'A nozzle change is already in progress.' });
+  busyAdjustments.add(req.printerId);
   try {
     const ctx = await getPrinterContext(config);
     if (!ctx || !['printing','paused'].includes(ctx.print_state)) return res.status(409).json({ error: 'Nozzle target changes require an active or paused print.' });
@@ -222,7 +222,43 @@ router.post('/nozzle', async (req, res) => {
     if(result.confirmed) await recordManualCorrection('nozzle',ctx.nozzle_target,target,ctx,config).catch(e=>console.warn(`[manual:${req.printerId}] ${e.message}`));
     res.status(result.confirmed ? 200 : 202).json(result);
   } catch(e) { res.status(503).json({ error: `Nozzle change could not be confirmed: ${e.message}. Check the live target before trying again.` }); }
-  finally { nozzleBusy.delete(req.printerId); }
+  finally { busyAdjustments.delete(req.printerId); }
+});
+
+router.post('/live-controls/:control', async (req, res) => {
+  const { control } = req.params;
+  if (!LIVE_TARGET_CONTROLS.includes(control)) return res.status(404).json({ error: 'Unknown live control.' });
+  const config = getConfig(req.printerId);
+  if (config.model !== 'qidi') return res.status(409).json({ error: 'These live controls are currently QIDI-only.' });
+  const { target, expected, filename, extruder, session_start } = req.body || {};
+  if (!Number.isFinite(target) || !Number.isFinite(expected) || typeof filename !== 'string' ||
+      !/^extruder\d*$/.test(extruder) || !Number.isFinite(session_start)) {
+    return res.status(400).json({ error: 'Enter a valid target and refresh the printer readings.' });
+  }
+  if (busyAdjustments.has(req.printerId)) return res.status(409).json({ error: 'A printer adjustment is already in progress.' });
+  busyAdjustments.add(req.printerId);
+  try {
+    const ctx = await getPrinterContext(config);
+    const field = CONTROL_FIELDS[control];
+    const start = ctx?.captured_at - ctx?.print_total_duration_sec * 1000;
+    if (!['printing', 'paused'].includes(ctx?.print_state) || ctx.filename !== filename || ctx.active_extruder !== extruder ||
+        !Number.isFinite(start) || !Number.isFinite(ctx.print_total_duration_sec) ||
+        Math.abs(start - session_start) > 15_000 || expected !== ctx[field]) {
+      return res.status(409).json({ error: 'The print or current setting changed. Review the live readings before applying.' });
+    }
+    if (!validLiveTarget(control, target, ctx)) return res.status(400).json({ error: 'Target is outside the live adjustment limits or unavailable at this layer.' });
+    if (target === expected) return res.json({ confirmed: true, observed: target });
+    const result = await executeFix({
+      fix: { control, before: expected, after: target, baseline: ctx },
+      config, request: fetch, context: current => readFixState(current, fetch, control, extruder),
+    });
+    if (result.confirmed) await recordManualCorrection(control, expected, target, ctx, config).catch(e => console.warn(`[manual:${req.printerId}] ${e.message}`));
+    return res.status(result.confirmed ? 200 : 202).json(result);
+  } catch (e) {
+    return res.status(503).json({ error: `Change could not be confirmed: ${e.message}. Check the live setting before trying again.` });
+  } finally {
+    busyAdjustments.delete(req.printerId);
+  }
 });
 
 // POST /api/printer/gcode — run a raw gcode command (M220, M221, etc.)

@@ -14,6 +14,10 @@ const ISSUE_LABELS = {
   over_extrusion: 'Over-Extrusion',
   elephant_foot: 'Elephant Foot',
   ghosting: 'Ghosting/Ringing',
+  first_layer_gap: 'First-layer gaps',
+  first_layer_squish: 'Excess first-layer squish',
+  pressure_advance_low: 'Corner buildup',
+  pressure_advance_high: 'Corner thinning',
   spaghetti: 'Spaghetti Failure',
   blob_zit: 'Blob/Zit',
   bed_adhesion: 'Bed Adhesion',
@@ -214,6 +218,7 @@ export default function DiagnosePanel({ config, onResult, latestResult }) {
   const fileRef = useRef();
   const contextRef = useRef(null);
   const [printContext, setPrintContext] = useState(null);
+  const [printSession, setPrintSession] = useState(0);
   const latestRef = useRef(latestResult);
   const loadingRef = useRef(loading);
   latestRef.current = latestResult; loadingRef.current = loading;
@@ -225,6 +230,13 @@ export default function DiagnosePanel({ config, onResult, latestResult }) {
         if (!r.ok) return;
         const ctx = await r.json();
         if (!active || !ctx?.captured_at) return;
+        const previous = contextRef.current;
+        if (previous && previous.captured_at >= ctx.captured_at) return;
+        if (previous && !belongsToPrint({ printer_context: previous }, ctx)) {
+          setPrintSession(session => session + 1);
+          setPreviewUrl(null);
+          setError(null);
+        }
         contextRef.current = ctx;
         setPrintContext(ctx);
         if (latestRef.current && !belongsToPrint(latestRef.current, ctx)) {
@@ -238,7 +250,7 @@ export default function DiagnosePanel({ config, onResult, latestResult }) {
     const refresh = async () => {
       try {
         await refreshContext();
-        const r = await apiFetch('/api/history?limit=1');
+        const r = await apiFetch('/api/history?scope=current-print&limit=1');
         if (!r.ok) return;
         const rows = await r.json();
         const latest = rows[0];
@@ -278,7 +290,7 @@ export default function DiagnosePanel({ config, onResult, latestResult }) {
     diagnose(file);
   };
 
-  const result = latestResult;
+  const result = belongsToPrint(latestResult || {}, printContext) ? latestResult : null;
 
   return (
     <div className="stack">
@@ -287,7 +299,7 @@ export default function DiagnosePanel({ config, onResult, latestResult }) {
       </div>
       <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div style={{ fontWeight: 700, fontSize: 14 }}>AI Diagnosis</div>
-        <p style={{ color: 'var(--muted)', fontSize: 12 }}>Nozzle and flow fixes can auto-apply when enabled in Automatic monitoring. Speed and fan changes require Apply fix.</p>
+        <p style={{ color: 'var(--muted)', fontSize: 12 }}>Eligible fixes can auto-apply when enabled in Automatic monitoring. Speed and fan changes require Apply fix.</p>
 
         <div style={{ display: 'flex', gap: 10 }}>
           <button
@@ -378,7 +390,7 @@ export default function DiagnosePanel({ config, onResult, latestResult }) {
         )}
       </div>
       <div className="card">
-        <History latestId={result?.id} />
+        <History key={printSession} latestId={result?.id} printContext={printContext} />
       </div>
     </div>
   );

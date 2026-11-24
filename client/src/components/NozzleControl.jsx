@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { usePrinterApi } from '../printerApi.jsx';
 
-export default function NozzleControl({ config, ctx, onApplied }) {
+export default function NozzleControl({ config, ctx, onApplied, unlocked }) {
   const { apiFetch } = usePrinterApi();
   const [target, setTarget] = useState(String(ctx.nozzle_target ?? ''));
   const [busy, setBusy] = useState(false);
@@ -18,7 +18,7 @@ export default function NozzleControl({ config, ctx, onApplied }) {
   const valid = limitsKnown && Number.isInteger(value) && value >= min && value <= max;
   const apply = async e => {
     e.preventDefault();
-    if (sending.current || !valid) return;
+    if (!unlocked || sending.current || !valid) return;
     sending.current = true; setBusy(true); setMessage(''); setError('');
     try {
       const r = await apiFetch('/api/printer/nozzle', { method:'POST', headers:{'Content-Type':'application/json'},
@@ -34,9 +34,9 @@ export default function NozzleControl({ config, ctx, onApplied }) {
     <label htmlFor={`nozzle-target-${config.id}`}>Nozzle temperature</label>
     <p style={{ color:'var(--muted)', fontSize:12, margin:'5px 0' }}>Actual {ctx.nozzle_temp ?? '—'}°C · Current target {ctx.nozzle_target ?? '—'}°C</p>
     <div style={{ display:'flex',gap:8,alignItems:'center' }}>
-      <input id={`nozzle-target-${config.id}`} type="number" min={min} max={max} step="1" value={target} disabled={busy || !limitsKnown}
+      <input id={`nozzle-target-${config.id}`} type="number" min={min} max={max} step="1" value={target} disabled={!unlocked || busy || !limitsKnown}
         onChange={e => { dirty.current=true; setTarget(e.target.value); setMessage(''); }} style={{ width:100 }}/>
-      <span>°C</span><button className="btn-primary" type="submit" disabled={busy || !valid || value === ctx.nozzle_target}>{busy ? 'Setting target…' : 'Apply temperature'}</button>
+      <span>°C</span><button className="btn-primary" type="submit" disabled={!unlocked || busy || !valid || value === ctx.nozzle_target}>{busy ? 'Setting target…' : 'Apply temperature'}</button>
     </div>
     <p style={{ color:'var(--muted)', fontSize:12, marginTop:6 }}>{limitsKnown ? `Allowed ${min}–${max}°C.` : 'Waiting for nozzle heater limits.'}{ctx.material_profile?.nozzle && ` ${ctx.filament_type} reference: ${ctx.material_profile.nozzle.min}–${ctx.material_profile.nozzle.max}°C; follow your filament manufacturer's settings.`} Changes apply only when you click Apply temperature.</p>
     {message && <p role="status" style={{ fontSize:12,marginTop:6 }}>{message}</p>}

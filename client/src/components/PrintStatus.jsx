@@ -1,3 +1,5 @@
+import LiveTargetControls from './LiveTargetControls.jsx';
+import { belongsToPrint } from '../diagnosisSession.mjs';
 import NozzleControl from './NozzleControl.jsx';
 import { usePrinterApi } from '../printerApi.jsx';
 import React, { useState, useEffect, useCallback } from 'react';
@@ -85,6 +87,7 @@ export default function PrintStatus({ config, onPrinterFound }) {
     }
   };
 
+  const [editSession, setEditSession] = useState(null);
   const [controlling, setControlling] = useState(null);
   const [speedPct, setSpeedPct] = useState(100);
   const [flowPct, setFlowPct] = useState(100);
@@ -104,6 +107,7 @@ export default function PrintStatus({ config, onPrinterFound }) {
   }, [ctx?.flow_pct]);
 
   const sendGcode = async (script, setPending) => {
+    if (!editsUnlocked) return;
     setPending(true);
     try {
       const r = await apiFetch('/api/printer/gcode', {
@@ -134,6 +138,18 @@ export default function PrintStatus({ config, onPrinterFound }) {
   const display = status?.display_status;
   const progressPct = display?.progress != null ? Math.round(display.progress * 100) : null;
   const state = stats?.state || 'unknown';
+  const canTune = canControl && !!ctx?.filename && ['printing', 'paused'].includes(state);
+  const editsUnlocked = canTune && !!editSession && editSession.state === state &&
+    belongsToPrint({ printer_context: editSession.context }, ctx);
+  useEffect(() => {
+    if (editSession && !editsUnlocked) setEditSession(null);
+  }, [editSession, editsUnlocked]);
+  const toggleEdits = () => {
+    setSpeedPct(ctx.speed_factor_pct ?? 100);
+    setFanPct(ctx.fan_pct ?? 100);
+    setFlowPct(ctx.flow_pct ?? 100);
+    setEditSession(editsUnlocked ? null : { state, context: ctx });
+  };
 
   return (
     <div className="card">
@@ -245,7 +261,21 @@ export default function PrintStatus({ config, onPrinterFound }) {
             </div>
           )}
 
-          {config?.model === 'qidi' && ctx && ['printing','paused'].includes(state) && <NozzleControl config={config} ctx={ctx} onApplied={poll}/>}
+          {canTune && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '12px 0' }}>
+              <strong style={{ fontSize: 13 }}>Print tuning</strong>
+              <button className={editsUnlocked ? 'btn-primary' : 'btn-ghost'} type="button" role="switch"
+                aria-label="Manual print tuning edits" aria-checked={editsUnlocked} onClick={toggleEdits}>
+                {editsUnlocked ? 'Lock edits' : 'Unlock edits'}
+              </button>
+            </div>
+          )}
+          {config?.model === 'qidi' && canTune && (
+            <>
+              <NozzleControl key={String(editsUnlocked)} config={config} ctx={ctx} onApplied={poll} unlocked={editsUnlocked} />
+              <LiveTargetControls ctx={ctx} onApplied={poll} unlocked={editsUnlocked} />
+            </>
+          )}
 
           {/* Speed, flow, fan controls */}
           {canControl && state === 'printing' && (
@@ -259,7 +289,7 @@ export default function PrintStatus({ config, onPrinterFound }) {
                       <span style={{ fontWeight: 700, color: fanPct === 0 ? 'var(--crit)' : fanPct !== 100 ? 'var(--warn)' : 'var(--text)', fontFamily: 'monospace' }}>{fanPct}%</span>
                       <button
                         onClick={() => { setFanPct(100); sendGcode('M106 S255', setPendingFan); }}
-                        disabled={fanPct === 100 || pendingFan}
+                        disabled={!editsUnlocked || fanPct === 100 || pendingFan}
                         style={{ fontSize: 10, color: 'var(--muted)', background: 'none', border: '1px solid var(--border)', borderRadius: 3, padding: '1px 6px', cursor: fanPct !== 100 ? 'pointer' : 'default' }}
                       >
                         Reset
@@ -268,10 +298,11 @@ export default function PrintStatus({ config, onPrinterFound }) {
                   </div>
                   <input type="range" min="0" max="100" step="5" value={fanPct}
                     onChange={e => setFanPct(Number(e.target.value))}
-                    onMouseUp={() => sendGcode(`M106 S${Math.round(fanPct / 100 * 255)}`, setPendingFan)}
-                    onTouchEnd={() => sendGcode(`M106 S${Math.round(fanPct / 100 * 255)}`, setPendingFan)}
-                    style={{ width: '100%', accentColor: fanPct === 0 ? 'var(--crit)' : fanPct !== 100 ? 'var(--warn)' : 'var(--accent)' }}
+                    aria-label="Part cooling fan percent" disabled={!editsUnlocked || pendingFan}
+                    style={{ width: '100%', touchAction: 'pan-y', accentColor: fanPct === 0 ? 'var(--crit)' : fanPct !== 100 ? 'var(--warn)' : 'var(--accent)' }}
                   />
+                  <button type="button" className="btn-ghost" disabled={!editsUnlocked || pendingFan || fanPct === ctx.fan_pct}
+                    onClick={() => sendGcode(`M106 S${Math.round(fanPct / 100 * 255)}`, setPendingFan)}>Apply fan</button>
                 </div>
               )}
               {/* Speed */}
@@ -282,7 +313,7 @@ export default function PrintStatus({ config, onPrinterFound }) {
                     <span style={{ fontWeight: 700, color: speedPct !== 100 ? 'var(--warn)' : 'var(--text)', fontFamily: 'monospace' }}>{speedPct}%</span>
                     <button
                       onClick={() => { setSpeedPct(100); sendGcode('M220 S100', setPendingSpeed); }}
-                      disabled={speedPct === 100 || pendingSpeed}
+                      disabled={!editsUnlocked || speedPct === 100 || pendingSpeed}
                       style={{ fontSize: 10, color: 'var(--muted)', background: 'none', border: '1px solid var(--border)', borderRadius: 3, padding: '1px 6px', cursor: speedPct !== 100 ? 'pointer' : 'default' }}
                     >
                       Reset
@@ -292,10 +323,11 @@ export default function PrintStatus({ config, onPrinterFound }) {
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                   <input type="range" min="25" max="200" step="5" value={speedPct}
                     onChange={e => setSpeedPct(Number(e.target.value))}
-                    onMouseUp={() => sendGcode(`M220 S${speedPct}`, setPendingSpeed)}
-                    onTouchEnd={() => sendGcode(`M220 S${speedPct}`, setPendingSpeed)}
-                    style={{ flex: 1, accentColor: speedPct > 100 ? 'var(--warn)' : 'var(--accent)' }}
+                    aria-label="Print speed percent" disabled={!editsUnlocked || pendingSpeed}
+                    style={{ flex: 1, touchAction: 'pan-y', accentColor: speedPct > 100 ? 'var(--warn)' : 'var(--accent)' }}
                   />
+                  <button type="button" className="btn-ghost" disabled={!editsUnlocked || pendingSpeed || speedPct === ctx?.speed_factor_pct}
+                    onClick={() => sendGcode(`M220 S${speedPct}`, setPendingSpeed)}>Apply speed</button>
                 </div>
               </div>
               {/* Flow */}
@@ -306,7 +338,7 @@ export default function PrintStatus({ config, onPrinterFound }) {
                     <span style={{ fontWeight: 700, color: flowPct !== 100 ? 'var(--warn)' : 'var(--text)', fontFamily: 'monospace' }}>{flowPct}%</span>
                     <button
                       onClick={() => { setFlowPct(100); sendGcode('M221 S100', setPendingFlow); }}
-                      disabled={flowPct === 100 || pendingFlow}
+                      disabled={!editsUnlocked || flowPct === 100 || pendingFlow}
                       style={{ fontSize: 10, color: 'var(--muted)', background: 'none', border: '1px solid var(--border)', borderRadius: 3, padding: '1px 6px', cursor: flowPct !== 100 ? 'pointer' : 'default' }}
                     >
                       Reset
@@ -315,17 +347,17 @@ export default function PrintStatus({ config, onPrinterFound }) {
                 </div>
                 <div role="group" aria-label="Flow rate adjustment" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                   <button type="button" className="btn-ghost" aria-label="Decrease flow by 1 percent"
-                    disabled={pendingFlow || Number(flowPct) <= 50}
+                    disabled={!editsUnlocked || pendingFlow || Number(flowPct) <= 50}
                     onClick={() => setFlowPct(Math.max(50, (Number(flowPct) || 100) - 1))}>−</button>
                   <input type="number" min="50" max="150" step="1" aria-label="Flow rate percent" value={flowPct}
-                    disabled={pendingFlow} onChange={e => setFlowPct(e.target.value === '' ? '' : Number(e.target.value))}
+                    disabled={!editsUnlocked || pendingFlow} onChange={e => setFlowPct(e.target.value === '' ? '' : Number(e.target.value))}
                     style={{ width: 90, textAlign: 'center' }}/>
                   <span>%</span>
                   <button type="button" className="btn-ghost" aria-label="Increase flow by 1 percent"
-                    disabled={pendingFlow || Number(flowPct) >= 150}
+                    disabled={!editsUnlocked || pendingFlow || Number(flowPct) >= 150}
                     onClick={() => setFlowPct(Math.min(150, (Number(flowPct) || 100) + 1))}>+</button>
                   <button type="button" className="btn-primary"
-                    disabled={pendingFlow || !Number.isInteger(flowPct) || flowPct < 50 || flowPct > 150 || flowPct === ctx?.flow_pct}
+                    disabled={!editsUnlocked || pendingFlow || !Number.isInteger(flowPct) || flowPct < 50 || flowPct > 150 || flowPct === ctx?.flow_pct}
                     onClick={() => sendGcode(`M221 S${flowPct}`, setPendingFlow)}>{pendingFlow ? 'Applying…' : 'Apply flow'}</button>
                 </div>
                 <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 5 }}>Current: {ctx?.flow_pct ?? '—'}%. Adjust in 1% steps, then click Apply flow.</p>

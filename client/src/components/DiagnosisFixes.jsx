@@ -2,7 +2,8 @@ import { currentPrintAdjustments } from '../diagnosisSession.mjs';
 import React, { useEffect, useState } from 'react';
 import { usePrinterApi } from '../printerApi.jsx';
 
-const LABELS = { speed: 'Print speed', flow: 'Extrusion flow', fan: 'Part cooling fan', nozzle: 'Nozzle target', bed: 'Bed target' };
+const LABELS = { speed: 'Print speed', flow: 'Extrusion flow', fan: 'Part cooling fan', nozzle: 'Nozzle target', bed: 'Bed target', z_offset: 'Z offset', pressure_advance: 'Pressure advance', acceleration: 'Acceleration limit' };
+const UNITS = { speed: '%', flow: '%', fan: '%', nozzle: '°C', bed: '°C', z_offset: ' mm', acceleration: ' mm/s²' };
 export default function DiagnosisFixes({ result, config, recent = false, printContext }) {
   const { apiFetch } = usePrinterApi();
   const [data, setData] = useState({ fixes: [], events: [] });
@@ -48,11 +49,11 @@ export default function DiagnosisFixes({ result, config, recent = false, printCo
   const visible = recent ? currentPrintAdjustments(data, printContext) : data;
   return <section style={{ borderTop: recent ? undefined : '1px solid var(--border)', paddingTop: recent ? undefined : 12 }}>
     <h3 style={{ fontSize: 14, marginBottom: 6 }}>{recent ? 'Recent adjustments' : 'Review a suggested adjustment'}</h3>
-    <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 12 }}>Enabled nozzle, bed, and flow fixes apply automatically. Other fixes need review. Follow-up checks compare new material against a saved post-correction image.</p>
+    <p style={{ color: 'var(--muted)', fontSize: 12, marginBottom: 12 }}>Fixes apply automatically only when their control is enabled. Other fixes need review. Follow-up checks compare new material against a saved post-correction image.</p>
     {visible.fixes.length === 0 && <p style={{ fontSize: 13, color: 'var(--muted)' }}>{recent ? 'No adjustments for the current print.' : config?.model !== 'qidi' ? 'Reviewed control changes are currently supported for the QIDI only.' : 'No eligible live adjustment from this diagnosis. Follow the advice above; uploaded images, missing readings, and issues needing inspection do not offer control changes.'}</p>}
     {visible.fixes.map(fix => {
       const timestamp = new Date(fix.applied_at ?? fix.updated_at ?? fix.created_at);
-      const unit = ['nozzle', 'bed'].includes(fix.control) ? '°C' : '%';
+      const unit = UNITS[fix.control] || '';
       const expired = now > fix.expires_at;
       const undoExpired = !fix.applied_at || now > fix.applied_at + 600000;
       const inFlight = ['applying','undoing'].includes(fix.state);

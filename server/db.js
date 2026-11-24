@@ -1,3 +1,4 @@
+import { AUTO_FLAGS } from './diagnosisFixes.js';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -102,7 +103,7 @@ try {
 export function getConfig(id = 'qidi') {
   const row = db.prepare('SELECT settings FROM printers WHERE id=?').get(id);
   if (!row) throw new Error('Unknown printer');
-  return { auto_nozzle_enabled:'0', auto_flow_enabled:'0', auto_bed_enabled:'0', ...JSON.parse(row.settings), id };
+  return { ...Object.fromEntries(Object.values(AUTO_FLAGS).map(key => [key, '0'])), ...JSON.parse(row.settings), id };
 }
 export function listPrinters() {
   return db.prepare('SELECT id FROM printers ORDER BY rowid').all().map(r => getConfig(r.id));
@@ -129,14 +130,29 @@ export function insertDiagnosis(record) {
   );
 }
 
-export function getHistory(limit = 50, printerId = 'qidi', offset = 0) {
-  return db.prepare('SELECT * FROM diagnoses WHERE printer_id=? ORDER BY id DESC LIMIT ? OFFSET ?').all(printerId, limit, offset).map(r => ({
-    ...r,
-    followup:getFollowup(r.id,printerId),
-    issues: JSON.parse(r.issues || '[]'),
-    auto_triggered: !!r.auto_triggered,
-    printer_context: r.printer_context ? JSON.parse(r.printer_context) : null,
-  }));
+export function getHistory(limit = 50, printerId = 'qidi', offset = 0, matches = null) {
+  const query = 'SELECT * FROM diagnoses WHERE printer_id=? ORDER BY id DESC';
+  const read = row => ({
+    ...row,
+    followup: getFollowup(row.id, printerId),
+    issues: JSON.parse(row.issues || '[]'),
+    auto_triggered: !!row.auto_triggered,
+    printer_context: row.printer_context ? JSON.parse(row.printer_context) : null,
+  });
+  if (!matches) return db.prepare(`${query} LIMIT ? OFFSET ?`).all(printerId, limit, offset).map(read);
+
+  const results = [];
+  for (const row of db.prepare(query).iterate(printerId)) {
+    const context = row.printer_context ? JSON.parse(row.printer_context) : null;
+    if (!matches({ ...row, printer_context: context })) continue;
+    if (offset > 0) {
+      offset--;
+      continue;
+    }
+    results.push(read(row));
+    if (results.length === limit) break;
+  }
+  return results;
 }
 
 export default db;
@@ -146,11 +162,6 @@ export function getDiagnosis(id, printerId = 'qidi') {
   if (!row) return null;
   let parsed = {}; try { parsed = JSON.parse(row.raw_response || '{}'); } catch {}
   return { ...row, followup:getFollowup(row.id,printerId), issues: JSON.parse(row.issues || '[]'), printer_context: row.printer_context ? JSON.parse(row.printer_context) : null, summary: parsed?.summary || '' };
-}
-
-export function getLatestAutoDiagnosis(printerId) {
-  const row = db.prepare('SELECT id,timestamp,overall_severity AS severity FROM diagnoses WHERE printer_id=? AND auto_triggered=1 ORDER BY id DESC LIMIT 1').get(printerId);
-  return row || null;
 }
 
 db.exec(`CREATE TABLE IF NOT EXISTS diagnosis_followups (diagnosis_id INTEGER PRIMARY KEY,printer_id TEXT NOT NULL,payload TEXT NOT NULL)`);

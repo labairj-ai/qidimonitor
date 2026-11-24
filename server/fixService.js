@@ -1,17 +1,17 @@
 import fetch from 'node-fetch';
 import { getConfig, setConfig } from './db.js';
 import { getPrinterContext } from './printerContext.js';
-import { executeFix, validateFixContext, readFixState } from './diagnosisFixes.js';
+import { executeFix, validateFixContext, readFixState, AUTO_FLAGS } from './diagnosisFixes.js';
 import { getFix, claimFix, finishFix, recordFixEvent } from './fixStore.js';
 import { recordCorrection, validateCorrectionMemory } from './correctionMemory.js';
 
-export const AUTO_FLAGS = { nozzle:'auto_nozzle_enabled', flow:'auto_flow_enabled' };
-const busy = new Set();
+export { AUTO_FLAGS };
+export const busyAdjustments = new Set();
 export async function applySavedFix(id, printerId, { undo=false, automatic=false, scheduled=false } = {}) {
-  if (busy.has(printerId)) throw new Error('A printer adjustment is already in progress.');
+  if (busyAdjustments.has(printerId)) throw new Error('A printer adjustment is already in progress.');
   const fix=getFix(id,printerId);
   if (!fix) throw new Error('Fix not found');
-  busy.add(printerId);let claimed=false;
+  busyAdjustments.add(printerId);let claimed=false;
   try {
     const config=getConfig(printerId);
     if (config.model !== 'qidi') throw new Error('Fixes are currently available for the QIDI only.');
@@ -36,7 +36,7 @@ export async function applySavedFix(id, printerId, { undo=false, automatic=false
     finishFix(fix,undo?'undo':'apply',{confirmed:false,source:automatic?'automatic':'manual',message:`Change could not be confirmed: ${e.message}. Inspect live controls; it will not be resent.`});
     if (AUTO_FLAGS[fix.control]) setConfig({[AUTO_FLAGS[fix.control]]:'0'},printerId);
     return {confirmed:false,message:e.message,fix:getFix(id,printerId)};
-  } finally {busy.delete(printerId);}
+  } finally {busyAdjustments.delete(printerId);}
 }
 export async function autoApplyFixes(fixes, originalConfig, {scheduled=false}={}) {
   const results=[];

@@ -1,3 +1,4 @@
+import { AUTO_FLAGS } from './diagnosisFixes.js';
 import fetch from 'node-fetch';
 import { listPrinters } from './db.js';
 import { runDiagnosis } from './routes/diagnose.js';
@@ -24,7 +25,7 @@ export function createMonitor({ printers = listPrinters, request = fetch, diagno
     const setup_error = monitorSetup(config);
     const phase = !enabled ? state.busy ? 'finishing' : 'disabled' : setup_error ? 'not_configured' : state.phase;
     const { next_poll_at, was_printing, last_filename, last_duration, ...visible } = state;
-    return { ...visible, phase, enabled, auto_nozzle_enabled:config.auto_nozzle_enabled === '1', auto_flow_enabled:config.auto_flow_enabled === '1', interval_minutes:intervalFor(config)/60000, setup_error, next_check_at:enabled ? state.next_check_at : null };
+    return { ...visible, phase, enabled, ...Object.fromEntries(Object.values(AUTO_FLAGS).map(flag => [flag, config[flag] === '1'])), interval_minutes:intervalFor(config)/60000, setup_error, next_check_at:enabled ? state.next_check_at : null };
   };
   const stillConfigured = config => {
     const current = find(config.id);
@@ -53,13 +54,14 @@ export function createMonitor({ printers = listPrinters, request = fetch, diagno
       if (!force && !newPrint && now() < due) { state.phase = state.last_error ? 'error' : 'scheduled'; state.next_check_at = due; return; }
       attempted = true; state.last_attempt_at = now(); state.last_error = null;
       const camera = config.camera_url || `http://${config.printer_ip}/webcam/?action=snapshot`;
+      const imageCapturedAt = now();
       const image = await request(camera, { signal:AbortSignal.timeout(8000) });
       if (!image.ok) throw new Error(`Camera snapshot unavailable (${image.status}).`);
       const imageBuffer = Buffer.from(await image.arrayBuffer());
       if (!imageBuffer.length) throw new Error('Camera returned an empty snapshot.');
       if (!stillConfigured(config)) return;
       state.phase = 'analyzing';
-      const result = await diagnose({ imageBuffer, printFile:stats.filename, autoTriggered:true, config });
+      const result = await diagnose({ imageBuffer, printFile:stats.filename, autoTriggered:true, config, imageCapturedAt });
       state.last_success_at = now(); state.last_diagnosis_id = result?.id || null; state.last_severity = result?.overall_severity || null;
       state.phase = 'scheduled'; state.last_error = null;
     } catch(e) {

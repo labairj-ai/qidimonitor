@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { buildFixes, validAdjustment, validateFixContext, fixCommand, FIX_TTL_MS } from '../server/diagnosisFixes.js';
+import { buildFixes, validAdjustment, validateFixContext, fixCommand, FIX_TTL_MS, validLiveTarget } from '../server/diagnosisFixes.js';
 
 const baseline = () => ({model:'qidi', print_state:'printing', filename:'part.gcode', active_extruder:'extruder', print_duration_sec:100, print_total_duration_sec:100, captured_at:Date.now(), speed_factor_pct:100, flow_pct:100, fan_pct:60, filament_type:'PLA', z_mm:2, first_layer_height:0.2});
 const parsed = (control='speed', value=90, category='ghosting') => ({ overall_severity:'warning', issues:[{category,severity:'moderate',evidence_region:'printed_part',description:'Visible ripples beside the edge',geometry_evidence:{evidence:'visible_defect',detail:'Repeated ridges are visible directly beside the front edge.'},suggestion:'Try a small adjustment'}], control_suggestions:[{control,value,issue_category:category,reason:'Visible ringing suggests trying a modest speed reduction.'}] });
@@ -78,6 +78,8 @@ const store=await import('../server/db.js');
 const fixStore=await import('../server/fixStore.js');
 let speed=100, flow=100, fan=60, filename='part.gcode', printState='printing', recommendation=parsed();
 let nozzleTarget=205, nozzleActual=205, material='PLA';
+let bedTarget=60, bedActual=60;
+let liveZ=2, zOffset=0, pressureAdvance=0.04, maxAcceleration=4000;
 const scripts=[];
 let commandMode='normal';
 let visionRequest;
@@ -85,7 +87,7 @@ const printedGcode = 'G90\nM83\nG1 Z0.2\nG1 X20 E1\nG1 Y20 E1\n';
 const gcode = printedGcode + 'G1 Z0.4\nG1 X0 E1\n';
 const fake=http.createServer(async(req,res)=>{
   res.setHeader('Content-Type','application/json');
-  const status={ virtual_sdcard:{file_position:Buffer.byteLength(printedGcode)},print_stats:{state:printState,filename,print_duration:100,total_duration:100},toolhead:{extruder:'extruder'},gcode_move:{speed_factor:speed/100,extrude_factor:flow/100},extruder:{temperature:nozzleActual,target:nozzleTarget},heater_bed:{temperature:60,target:60},'output_pin fan0':{value:fan/100},motion_report:{live_position:[0,0,2]},configfile:{config:{extruder:{nozzle_diameter:0.4,min_temp:0,max_temp:300,min_extrude_temp:170}}}};
+  const status={ virtual_sdcard:{file_position:Buffer.byteLength(printedGcode)},print_stats:{state:printState,filename,print_duration:100,total_duration:100},toolhead:{extruder:'extruder',max_accel:maxAcceleration},gcode_move:{speed_factor:speed/100,extrude_factor:flow/100,homing_origin:[0,0,zOffset],gcode_position:[0,0,liveZ]},extruder:{temperature:nozzleActual,target:nozzleTarget,pressure_advance:pressureAdvance},heater_bed:{temperature:bedActual,target:bedTarget},'output_pin fan0':{value:fan/100},motion_report:{live_position:[0,0,liveZ]},configfile:{config:{extruder:{nozzle_diameter:0.4,min_temp:0,max_temp:300,min_extrude_temp:170},heater_bed:{min_temp:0,max_temp:120},printer:{max_accel:'5000'}}}};
   if(req.url==='/api/generate') { let body=''; for await(const chunk of req) body+=chunk; visionRequest=JSON.parse(body); return res.end(JSON.stringify({response:JSON.stringify(recommendation)})); }
   if(req.url==='/snapshot') { res.setHeader('Content-Type','image/jpeg'); return res.end(Buffer.from([255,216,255,217])); }
   if(req.url==='/printer/objects/list') return res.end(JSON.stringify({result:{objects:Object.keys(status)}}));
@@ -98,6 +100,10 @@ const fake=http.createServer(async(req,res)=>{
     if(commandMode==='reject') { res.statusCode=500; return res.end('{}'); }
     setTimeout(()=>{
       if(script.startsWith('SET_HEATER_TEMPERATURE HEATER=extruder TARGET=')) nozzleTarget=Number(script.split('TARGET=')[1]);
+      if(script.startsWith('SET_HEATER_TEMPERATURE HEATER=heater_bed TARGET=')) bedTarget=Number(script.split('TARGET=')[1]);
+      if(script.startsWith('SET_GCODE_OFFSET Z=')) zOffset=Number(script.split(' ')[1].split('=')[1]);
+      if(script.startsWith('SET_PRESSURE_ADVANCE ')) pressureAdvance=Number(script.split('ADVANCE=')[1]);
+      if(script.startsWith('SET_VELOCITY_LIMIT ACCEL=')) maxAcceleration=Number(script.split('ACCEL=')[1]);
       if(script.startsWith('M220 S')) speed=Number(script.slice(6));
       if(script.startsWith('M221 S')) flow=Number(script.slice(6));
       if(script.startsWith('M106 S')) fan=Math.round(Number(script.slice(6))*100/255);
@@ -261,6 +267,45 @@ test('only opted-in nozzle/flow recommendations auto-apply; old defects cannot t
   const u1=await json('/api/printers/u1/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({auto_flow_enabled:'1'})});assert.equal(u1.status,409);
 });
 
+test('opted-in bed fixes apply automatically once and Undo disarms them', async () => {
+  store.default.prepare("UPDATE diagnosis_fixes SET state='dismissed'").run();
+  store.default.prepare('DELETE FROM diagnosis_fix_events').run();
+  const put = body => ({ method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+  assert.equal((await json('/api/printers/u1/config', put({ auto_bed_enabled:'1' }))).status, 409);
+  assert.equal((await json('/api/printers/qidi/config', put({ auto_bed_enabled:'1' }))).status, 200);
+  assert.equal((await json('/api/printers/qidi/monitor')).data.auto_bed_enabled, true);
+  printState = 'printing';
+  material = 'PETG';
+  commandMode = 'normal';
+  bedTarget = 67;
+  bedActual = 67;
+  recommendation = parsed('bed', 70, 'bed_temperature');
+  const count = scripts.length;
+  const diagnosis = await diagnose();
+  assert.equal(diagnosis.auto_actions[0].confirmed, true);
+  assert.equal(bedTarget, 70);
+  assert.deepEqual(scripts.slice(count), ['SET_HEATER_TEMPERATURE HEATER=heater_bed TARGET=70']);
+  assert.deepEqual((await diagnose()).auto_actions, []);
+  const undo = await json(`/api/printers/qidi/diagnose/fixes/${diagnosis.fixes[0].id}/undo`, post);
+  assert.equal(undo.status, 200);
+  assert.equal(bedTarget, 67);
+  assert.equal(store.getConfig('qidi').auto_bed_enabled, '0');
+});
+
+test('bed adjustments require known material and hardware limits, settled telemetry and a bounded rise', () => {
+  const ctx = { ...baseline(), filament_type:'PETG', bed_target:67, bed_temp:67,
+    printer_config:{ bed_min_temp:0, bed_max_temp:120 } };
+  assert.equal(buildFixes(parsed('bed', 70, 'bed_temperature'), ctx, options()).length, 1);
+  for (const value of [0, 66, 69, 73, 111]) {
+    assert.deepEqual(buildFixes(parsed('bed', value, 'bed_temperature'), ctx, options()), []);
+  }
+  for (const invalid of [{ bed_temp:63 }, { filament_type:'unknown' }, { printer_config:{} },
+    { bed_target:70, bed_temp:70 }, { printer_config:{ bed_min_temp:0, bed_max_temp:72 } }]) {
+    assert.deepEqual(buildFixes(parsed('bed', 70, 'bed_temperature'), { ...ctx, ...invalid }, options()), []);
+  }
+  assert.deepEqual(buildFixes(parsed('bed', 70, 'bed_adhesion'), ctx, options()), []);
+});
+
 test('disabling scheduled monitoring prevents automatic setting changes from a pending scheduled result',async()=>{
   store.default.prepare("UPDATE diagnosis_fixes SET state='dismissed'").run();store.default.prepare('DELETE FROM diagnosis_fix_events').run();
   store.setConfig({auto_enabled:'0',auto_flow_enabled:'0',auto_nozzle_enabled:'0'},'qidi');
@@ -271,6 +316,55 @@ test('disabling scheduled monitoring prevents automatic setting changes from a p
   await assert.rejects(()=>applySavedFix(fix.id,'qidi',{automatic:true,scheduled:true}),/monitoring was disabled/);
   assert.equal(scripts.length,count);
   store.setConfig({auto_flow_enabled:'0'},'qidi');
+});
+
+test('first-layer and motion proposals enforce evidence, direction, limits and decimal precision', () => {
+  const first = { ...baseline(), z_offset:0, gcode_z_mm:0.2, current_layer:1,
+    print_reference:{status:'used',z_mm:0.2} };
+  const z = parsed('z_offset', -0.01, 'first_layer_gap');
+  assert.equal(buildFixes(z,first,options()).length,1);
+  assert.deepEqual(buildFixes(z,{...first,current_layer:2},options()),[]);
+  assert.deepEqual(buildFixes(z,{...first,print_reference:{status:'unavailable'}},options()),[]);
+  assert.deepEqual(buildFixes(parsed('z_offset',0.01,'first_layer_gap'),first,options()),[]);
+  assert.equal(validLiveTarget('z_offset',0.021,first),false);
+  assert.equal(fixCommand('z_offset',-0.01),'SET_GCODE_OFFSET Z=-0.01 MOVE=0');
+  const motion = { ...baseline(), pressure_advance:0.04, max_acceleration:4000, printer_config:{max_accel:'5000'} };
+  const pa = buildFixes(parsed('pressure_advance',0.045,'pressure_advance_low'),motion,options())[0];
+  assert.ok(pa);
+  assert.throws(() => validateFixContext(pa,{...motion,pressure_advance:0.043}),/control has changed/);
+  assert.ok(buildFixes(parsed('acceleration',3650,'ghosting'),motion,options())[0]);
+  assert.deepEqual(buildFixes(parsed('acceleration',3000,'ghosting'),motion,options()),[]);
+  assert.throws(() => fixCommand('pressure_advance',0.05,'extruder;M112'));
+});
+
+test('manual bed and motion controls verify their targets and new AI toggles default off', async () => {
+  const prefix = '/api/printers/qidi';
+  const status = (await json(prefix+'/monitor')).data;
+  for (const key of ['auto_z_offset_enabled','auto_pressure_advance_enabled','auto_acceleration_enabled']) assert.equal(status[key],false);
+  const apply = async (control,target,override={}) => {
+    const ctx = (await json(prefix+'/printer/context')).data;
+    const field = {bed:'bed_target',z_offset:'z_offset',pressure_advance:'pressure_advance',acceleration:'max_acceleration'}[control];
+    return json(prefix+'/printer/live-controls/'+control,{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+        target,expected:ctx[field],filename:ctx.filename,extruder:ctx.active_extruder,
+        session_start:ctx.captured_at-ctx.print_total_duration_sec*1000,...override,
+      }),
+    });
+  };
+  printState='printing';
+  assert.equal((await apply('z_offset',-0.01)).status,400);
+  assert.equal((await apply('acceleration',6000)).status,400);
+  assert.equal((await apply('pressure_advance',0.05,{expected:0.02})).status,409);
+  liveZ=0.2;
+  assert.equal((await apply('z_offset',-0.01)).data.observed,-0.01);
+  liveZ=2;
+  assert.equal((await apply('bed',69)).data.observed,69);
+  assert.equal((await apply('pressure_advance',0.05)).data.observed,0.05);
+  assert.equal((await apply('acceleration',3500)).data.observed,3500);
+  const put={method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({auto_acceleration_enabled:'1'})};
+  assert.equal((await json('/api/printers/u1/config',put)).status,409);
+  assert.equal((await json(prefix+'/config',put)).status,200);
+  assert.equal((await json(prefix+'/monitor')).data.auto_acceleration_enabled,true);
 });
 
 test.after(async()=>{

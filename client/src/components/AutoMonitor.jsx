@@ -2,6 +2,11 @@ import { usePrinterApi } from '../printerApi.jsx';
 import React, { useState, useEffect, useRef } from 'react';
 
 const time = stamp => stamp ? new Date(stamp).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'}) : 'Not yet';
+const automaticControls = [
+  ['auto_nozzle_enabled', 'Nozzle temperature'], ['auto_flow_enabled', 'Flow rate'],
+  ['auto_bed_enabled', 'Bed temperature'], ['auto_z_offset_enabled', 'First-layer Z offset'],
+  ['auto_pressure_advance_enabled', 'Pressure advance'], ['auto_acceleration_enabled', 'Acceleration limit'],
+];
 export default function AutoMonitor({ config, onConfigChange }) {
   const { apiFetch } = usePrinterApi();
   const [status, setStatus] = useState(null);
@@ -14,8 +19,6 @@ export default function AutoMonitor({ config, onConfigChange }) {
   const savingRef = useRef(false);
   const revision = useRef(0);
   const enabled = status?.enabled ?? config?.auto_enabled === '1';
-  const autoNozzle=status?.auto_nozzle_enabled ?? config?.auto_nozzle_enabled === '1';
-  const autoFlow=status?.auto_flow_enabled ?? config?.auto_flow_enabled === '1';
   const savedInterval = status?.interval_minutes ?? Number(config?.auto_interval_min || 10);
   const interval = Number(draft);
   const valid = /^\d+$/.test(draft) && interval >= 1 && interval <= 1440;
@@ -83,14 +86,16 @@ export default function AutoMonitor({ config, onConfigChange }) {
         onClick={() => update({auto_enabled:enabled ? '0':'1'})}>{saving ? 'Saving…' : enabled ? 'Disable automatic checks' : 'Enable automatic checks'}</button>
     </div>
     <p role="status" style={{fontSize:13,marginTop:10,color:status?.phase === 'error' ? 'var(--crit)' : 'var(--muted)'}}>{description}</p>
-    <p style={{fontSize:12,color:'var(--muted)',marginTop:6}}>Eligible nozzle and flow fixes apply automatically when enabled below. Speed and fan fixes require Apply fix.</p>
+    <p style={{fontSize:12,color:'var(--muted)',marginTop:6}}>Eligible fixes apply automatically when their control is enabled below. Speed and fan fixes require Apply fix.</p>
     {config?.model === 'qidi' && <div style={{marginTop:12,paddingTop:10,borderTop:'1px solid var(--border)'}}>
       <h4 style={{fontSize:13,marginBottom:8}}>Automatic corrections</h4>
-      {[['auto_nozzle_enabled','Nozzle temperature',autoNozzle],['auto_flow_enabled','Flow rate',autoFlow]].map(([key,label,on])=><div key={key} style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,marginBottom:8}}>
+      {automaticControls.map(([key,label]) => {
+        const on = status?.[key] ?? config?.[key] === '1';
+        return <div key={key} style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,marginBottom:8}}>
         <span style={{fontSize:13}}>{label}</span><button type="button" role="switch" aria-label={`Auto-apply ${label}`} aria-checked={on} className={on?'btn-primary':'btn-ghost'} disabled={saving}
           onClick={()=>update({[key]:on?'0':'1'})}>{on?'Auto-apply on':'Auto-apply off'}</button>
-      </div>)}
-      <p style={{fontSize:12,color:'var(--muted)'}}>Applies only to new live diagnoses, within material limits. Previously corrected defects need a clear comparison showing new defects before another change. Undo turns off automatic changes for that control.</p>
+      </div>; })}
+      <p style={{fontSize:12,color:'var(--muted)'}}>Applies only to new live diagnoses, within the available printer and material limits. Previously corrected defects need a clear comparison showing new defects before another change. Undo turns off automatic changes for that control.</p>
     </div>}
     <form onSubmit={e => {e.preventDefault();if(valid) update({auto_interval_min:String(interval)});}} style={{marginTop:14}}>
       <label htmlFor={`monitor-interval-${config.id}`}>Check interval (minutes)</label>

@@ -211,9 +211,7 @@ export default function LiveFeed({ config }) {
           <button className="btn-ghost" style={{ padding: '4px 8px', fontSize: 12 }} onClick={() => setZoom(z => Math.max(1, +(z - 0.25).toFixed(2)))} disabled={zoom <= 1}>−</button>
           <span style={{ fontSize: 11, minWidth: 28, textAlign: 'center', color: isFullscreen ? '#ccc' : undefined }}>{zoom.toFixed(2)}×</span>
           <button className="btn-ghost" style={{ padding: '4px 8px', fontSize: 12 }} onClick={() => setZoom(z => Math.min(4, +(z + 0.25).toFixed(2)))}>+</button>
-          {zoom !== 1 && (
-            <button className="btn-ghost" style={{ padding: '4px 8px', fontSize: 11 }} onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}>reset</button>
-          )}
+          <button className="btn-ghost" style={{ padding: '4px 8px', fontSize: 11 }} disabled={zoom === 1} onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); }}>reset</button>
 
           <button className="btn-ghost" style={{ padding: '4px 10px', fontSize: 12 }} onClick={goLive} disabled={mode === 'live'}>
             Live
